@@ -4,7 +4,7 @@
   "description": "창작을 위한 메모 · 로어북 · 페르소나 · 캐릭터 관리 앱",
   "lang": "ko",
   "dir": "ltr",
-  "start_url": "./",
+  "start_url": "./?pwa-icon=ink",
   "scope": "./",
   "display": "standalone",
   "display_override": [
@@ -50,5 +50,6 @@
         }
       ]
     }
-  ]
+  ],
+  "id": "./?pwa-icon=ink"
 }
