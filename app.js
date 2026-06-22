@@ -1537,15 +1537,26 @@
     });
     return out;
   }
-  function renderLogLine(text, template, data) {
-    let segments = [{ text: String(text || ""), style: {} }];
-    template.rules.forEach((rule) => { segments = applyLogRule(segments, rule); });
+  function applyLogPersonaNames(segments, template, data) {
     const alias = (data.personaAlias || template.persona.maskText || "•••").trim();
-    [...(data.personaNames || [])].sort((a, b) => String(b).length - String(a).length).forEach((name) => { segments = applyPersonaMask(segments, String(name || "").trim(), alias, template.persona.style); });
+    [...(data.personaNames || [])].sort((a, b) => String(b).length - String(a).length).forEach((name) => {
+      segments = applyPersonaMask(segments, String(name || "").trim(), alias, template.persona.style);
+    });
+    return segments;
+  }
+  function renderLogSegments(segments) {
     return segments.map((segment) => {
       const style = logStyleAttr(segment.style), textHtml = esc(segment.text);
       return style ? `<span style="${esc(style)}">${textHtml}</span>` : textHtml;
     }).join("");
+  }
+  function renderLogMaskedText(text, template, data) {
+    return renderLogSegments(applyLogPersonaNames([{ text: String(text || ""), style: {} }], template, data));
+  }
+  function renderLogLine(text, template, data) {
+    let segments = [{ text: String(text || ""), style: {} }];
+    template.rules.forEach((rule) => { segments = applyLogRule(segments, rule); });
+    return renderLogSegments(applyLogPersonaNames(segments, template, data));
   }
   function renderLogInlineHtml(n) {
     const data = normalizeLogData(n && n.data), template = getLogTemplate(n), styles = template.styles;
@@ -1553,7 +1564,7 @@
     const body = lines.map((line) => line.length
       ? `<div style="${esc(logStyleAttr(styles.paragraph))}">${renderLogLine(line, template, data)}</div>`
       : `<div style="${esc(logStyleAttr(styles.empty))}"><br></div>`).join("");
-    const header = `<div style="${esc(logStyleAttr(styles.header))}">${esc((n && n.title) || "로그")}</div>`;
+    const header = `<div style="${esc(logStyleAttr(styles.header))}">${renderLogMaskedText((n && n.title) || "로그", template, data)}</div>`;
     return `<div data-lumink-log="1" style="${esc(logStyleAttr(styles.canvas))}">${header}<div style="${esc(logStyleAttr(styles.body))}">${body}</div></div>`;
   }
   function deriveLogTitle(content) {
@@ -1696,6 +1707,10 @@
     const n = getNote(st.curNoteId); if (!n || n.type !== "log") return;
     logTemplateTab = "builtin"; logTemplateQuery = ""; logTemplateSortAsc = true;
     openModal(`<div class="log-template-manager"><h3>로그 디자인 템플릿</h3><p class="m-sub">템플릿을 길게 누르면 즐겨찾기 상단에 고정됩니다.</p><div class="log-template-tabs" role="tablist" aria-label="템플릿 구분"><button data-log-tab="builtin" role="tab">기본 <small></small></button><button data-log-tab="custom" role="tab">사용자 <small></small></button><button data-log-tab="favorite" role="tab">즐겨찾기 <small></small></button></div><div class="log-template-tools"><input class="m-input" id="logTemplateSearch" type="search" autocomplete="off" placeholder="템플릿 제목·내용 검색" value="${esc(logTemplateQuery)}"><button class="m-btn" id="logTemplateSort" type="button">이름순 ↑</button></div><div class="log-template-list" id="logTemplateList"></div><div class="log-template-actions"><button class="m-btn primary" id="logTemplateUpload">JSON 템플릿 업로드</button><a class="m-btn" href="./lumink-log-template-guide.md" download>제작 가이드 받기</a><a class="m-btn log-template-gallery-link" href="./lumink-log-templates-50.html" target="_blank" rel="noopener">50종 소개 보기</a></div><div class="m-row"><button class="m-btn" id="logTemplateClose">닫기</button></div></div>`);
+    $("modalBox").classList.add("log-template-modal");
+    $("modalScrim").classList.add("log-template-open");
+    const galleryLink = $("modalBox").querySelector(".log-template-gallery-link");
+    if (galleryLink) { galleryLink.removeAttribute("target"); galleryLink.removeAttribute("rel"); }
     $("modalBox").querySelectorAll("[data-log-tab]").forEach((button) => button.addEventListener("click", () => { logTemplateTab = button.dataset.logTab; drawLogTemplatePicker(); }));
     $("logTemplateSearch").addEventListener("input", (event) => { logTemplateQuery = event.target.value; drawLogTemplatePicker(); });
     $on("logTemplateSort", "click", () => { logTemplateSortAsc = !logTemplateSortAsc; drawLogTemplatePicker(); });
@@ -2731,7 +2746,7 @@
   }
 
   /* ---------- modal ---------- */
-  function openModal(html) { $("modalBox").innerHTML = html; $("modalScrim").classList.add("open"); }
+  function openModal(html) { const box = $("modalBox"), scrim = $("modalScrim"); box.className = "modal"; box.innerHTML = html; scrim.classList.remove("log-template-open"); scrim.classList.add("open"); }
   function closeModal() { $("modalScrim").classList.remove("open"); }
   $on("modalScrim", "click", (e) => { if (e.target === $("modalScrim")) closeModal(); });
 
