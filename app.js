@@ -1262,7 +1262,7 @@
         scale:dpr, logging:false, useCORS:true, allowTaint:false,
         x:window.scrollX, y:window.scrollY, width:window.innerWidth, height:window.innerHeight,
         scrollX:0, scrollY:0, windowWidth:document.documentElement.clientWidth, windowHeight:document.documentElement.clientHeight,
-        onclone:(doc,el)=>{ try{ normalizeCloneColorFns(el||doc.body); }catch(e){} try{ rasterizeRepeatingGradients(el||doc.body); }catch(e){} }
+        onclone:(doc,el)=>{ try{ normalizeCloneColorFns(el||doc.body); }catch(e){} try{ rasterizeRepeatingGradients(el||doc.body); }catch(e){} try{ stripInsetShadows(el||doc.body); }catch(e){} }
       });
     }catch(e){ console.warn("eyedropper snapshot",e); if(scrim) scrim.style.visibility=scrimViz; toast("화면을 캡처하지 못해 스포이드를 열 수 없어요."); return; }
     if(scrim) scrim.style.visibility=scrimViz;
@@ -4413,9 +4413,14 @@
     // 병합 결과는 원본을 참조하지 않습니다. 각 페이지와 보조 필드를 복제해
     // 원본 메모를 삭제해도 새 캐릭터 모음이 독립적으로 남도록 합니다.
     const raw = jsonCopy(note && note.data) || {};
-    const source = note && note.type === "persona"
-      ? legacyPersonaDataToCharacterData(raw, true)
-      : ensureCharacterData({ data: raw });
+    // v64.7: v64에서 페르소나도 pages 기반 카드 데이터로 전환되었습니다.
+    // 이미 전환된 페르소나를 구형 변환기에 다시 넣으면 pages가 새 빈 페이지로
+    // 치환될 수 있으므로, pages가 있으면 캐릭터 모음과 같은 경로로 그대로 복제합니다.
+    const source = Array.isArray(raw.pages)
+      ? ensureCharacterData({ data: raw })
+      : (note && note.type === "persona"
+        ? legacyPersonaDataToCharacterData(raw, true)
+        : ensureCharacterData({ data: raw }));
     const coreKeys = new Set(["mode", "activeId", "pages", "coverImage"]);
     const dataExtras = {};
     Object.keys(source).forEach((key) => {
@@ -8405,6 +8410,39 @@ ornamentLine: { label: "장식 실선", desc: "중앙 장식이 있는 구분선
       (doc.head||doc.documentElement).appendChild(style);
     }
   }
+  // html2canvas는 inset box-shadow를 요소 전체 흰색/검정 범람으로 잘못 렌더해 배경을 덮어버립니다.
+  // 캡처 직전 inset 그림자만 제거하고 일반 드롭 섀도는 유지합니다.
+  function stripInsetShadows(root){
+    if(!root) return;
+    const win=(root.ownerDocument&&root.ownerDocument.defaultView)||window;
+    const doc=root.ownerDocument||document;
+    const pseudoRules=[];
+    const nodes=[root].concat([...root.querySelectorAll("*")]);
+    nodes.forEach((node,idx)=>{
+      if(node.nodeType!==1) return;
+      [null,"::before","::after"].forEach((pseudo)=>{
+        let cs; try{ cs=win.getComputedStyle(node,pseudo); }catch(e){ return; }
+        if(!cs) return;
+        const bs=cs.boxShadow;
+        if(!bs || bs==="none" || bs.indexOf("inset")<0) return;
+        if(pseudo){ const ct=cs.content; if(!ct||ct==="none") return; }
+        const kept=__rgSplitTop(bs,",").map((s)=>s.trim()).filter((p)=>p && !/\binset\b/.test(p));
+        const newBs=kept.length?kept.join(", "):"none";
+        if(pseudo){
+          const mark="data-lumink-bs-"+idx+"-"+(pseudo==="::before"?"b":"a");
+          try{ node.setAttribute(mark,""); pseudoRules.push("["+mark+"]"+pseudo+"{box-shadow:"+newBs+" !important;}"); }catch(e){}
+        } else {
+          try{ node.style.boxShadow=newBs; }catch(e){}
+        }
+      });
+    });
+    if(pseudoRules.length){
+      const style=doc.createElement("style");
+      style.setAttribute("data-lumink-bs","1");
+      style.textContent=pseudoRules.join("\n");
+      (doc.head||doc.documentElement).appendChild(style);
+    }
+  }
   async function exportIdeaViewportPng(id) {
     if(st.curNoteId===id) await flushIdeaBoard(false);
     const n=getNote(id); if(!n || n.type!=="idea") return;
@@ -8437,7 +8475,7 @@ ornamentLine: { label: "장식 실선", desc: "중앙 장식이 있는 구분선
         logging:false,
         useCORS:true,
         allowTaint:false,
-        onclone:(doc,el)=>{ try{ normalizeCloneColorFns(el||doc.body); }catch(e){} try{ rasterizeRepeatingGradients(el||doc.body); }catch(e){} },
+        onclone:(doc,el)=>{ try{ normalizeCloneColorFns(el||doc.body); }catch(e){} try{ rasterizeRepeatingGradients(el||doc.body); }catch(e){} try{ stripInsetShadows(el||doc.body); }catch(e){} },
         width:Math.max(1,Math.round(crop.w)),
         height:Math.max(1,Math.round(crop.h)),
         windowWidth:Math.max(1,Math.round(crop.w)),
