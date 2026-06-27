@@ -2,29 +2,17 @@
    업데이트를 배포할 때는 아래 CACHE 버전 숫자만 올리면
    기존 캐시가 정리되고 새 파일로 갱신됩니다. (예: v1 -> v2) */
 const CACHE_PREFIX = "ink-memo-";
-const CACHE = "ink-memo-v1.5-v64.7-persona-merge-data-fix";
+const CACHE = "ink-memo-v1.5-v66.8-appjs-divider-palette";
 
 const ASSETS = [
   "./",
   "./index.html",
   "./Lumi_Ink_Manual_1.html",
-  "./Lumi_Ink_v63.45_Release_Notes.md",
-  "./Lumi_Ink_v63.46_Release_Notes.md",
-  "./Lumi_Ink_v63.47_Release_Notes.md",
-  "./Lumi_Ink_v63.48_Release_Notes.md",
-  "./Lumi_Ink_v63.49_Release_Notes.md",
-  "./Lumi_Ink_v63.50_Release_Notes.md",
-  "./Lumi_Ink_v64_Release_Notes.md",
-  "./Lumi_Ink_v64.6_Release_Notes.md",
-  "./Lumi_Ink_v64.7_Release_Notes.md",
-  "./Lumi_Ink_v64.1_Release_Notes.md",
-  "./Lumi_Ink_v64.2_Release_Notes.md",
-  "./Lumi_Ink_v64.3_Release_Notes.md",
-  "./Lumi_Ink_v64.4_Release_Notes.md",
-  "./Lumi_Ink_v64.5_Release_Notes.md",
   "./Lumi_Ink_v1.5_Release_Notes.md",
+  "./Lumi_Ink_v66.8_Release_Notes.md",
   "./app.js",
   "./assets-icons.js",
+  "./quickmenu-icon-library.js",
   "./assets-frames.js",
   "./log-templates.js",
   "./lumink-log-template-guide.md",
@@ -113,6 +101,7 @@ const ASSETS = [
   "./manifest-pastel-green.json",
   "./manifest-pastel-purple.json",
   "./manifest-pastel-yellow.json",
+  "./lumi-ink-get-started.html",
   "./install-ink.html",
   "./install-violet.html",
   "./install-rose.html",
@@ -144,8 +133,7 @@ const ASSETS = [
   "./icon-pastel-purple-192.png",
   "./icon-pastel-purple-512.png",
   "./icon-pastel-yellow-192.png",
-  "./icon-pastel-yellow-512.png",
-  "./favicon.png"
+  "./icon-pastel-yellow-512.png"
 ];
 
 const REQUIRED_ASSETS = ["./", "./index.html", "./app.js", "./assets-icons.js", "./assets-frames.js", "./log-templates.js", "./tokenizer.js", "./manifest.json"];

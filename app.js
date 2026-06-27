@@ -82,6 +82,581 @@
   }
   function getOne(name, id) { return new Promise((res, rej) => { const r = store(name, "readonly").get(id); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 
+
+
+  /* ---------- right-edge quick menu · v65.2 code icon slots ---------- */
+  const QUICK_MENU_SETTING_ID = "quickMenu";
+  const QUICK_MENU_MAX = 7;
+  const QUICK_MENU_ALLOWED_TYPES = new Set(["free", "html", "lorebook", "log", "persona", "character", "idea"]);
+  const QUICK_MENU_ICON_LIBRARY = Array.isArray(window.__luminkQuickMenuIcons) ? window.__luminkQuickMenuIcons.filter((item) => item && typeof item.id === "string" && typeof item.svg === "string") : [];
+  const QUICK_MENU_ICON_BY_ID = new Map(QUICK_MENU_ICON_LIBRARY.map((item) => [item.id, item]));
+  const QUICK_MENU_ICON_CATEGORIES = [
+    ["all", "전체"], ["navigation", "이동"], ["action", "기능"], ["archive", "기록"], ["mood", "장식"]
+  ];
+  // v65.8: 홈 단일 바로가기를 확장한 기능 바로가기 목록입니다.
+  // 설정 화면의 각 행과 1:1로 연결해, 자주 쓰는 기능을 퀵 메뉴에서 바로 실행할 수 있어요.
+  const QUICK_MENU_FUNCTIONS = Object.freeze([
+    { id:"home", group:"빠른 이동", label:"홈 바로가기", meta:"루미잉크 첫 화면으로 이동" },
+    { id:"settings", group:"빠른 이동", label:"설정 바로가기", meta:"설정 화면을 바로 열기" },
+    { id:"app-reload", group:"빠른 이동", label:"앱 새로고침", meta:"저장한 뒤 현재 화면을 다시 불러오기" },
+    { id:"setting-theme", group:"화면 설정", label:"테마 전환", meta:"밝게 · 어둡게 즉시 전환" },
+    { id:"setting-accent", group:"화면 설정", label:"컬러 테마", meta:"프리셋 또는 사용자 지정 테마 고르기" },
+    { id:"setting-font", group:"화면 설정", label:"웹폰트", meta:"앱 글꼴 바꾸기" },
+    { id:"setting-toolbar", group:"화면 설정", label:"자유 메모 툴바", meta:"툴바 표시 방식 고르기" },
+    { id:"setting-quick-menu", group:"화면 설정", label:"퀵 메뉴 설정", meta:"슬롯과 표시 형태 편집" },
+    { id:"setting-install", group:"화면 설정", label:"앱 설치 아이콘", meta:"설치 간판 페이지에서 아이콘 고르기" },
+    { id:"setting-backup", group:"데이터 관리", label:"전체 백업", meta:"현재 데이터를 백업 파일로 저장" },
+    { id:"setting-restore", group:"데이터 관리", label:"백업 복원", meta:"백업 파일을 선택해 복원" },
+    { id:"setting-auto-backup", group:"데이터 관리", label:"자동 백업", meta:"저장된 자동 스냅샷 확인" },
+    { id:"setting-storage", group:"데이터 관리", label:"저장공간", meta:"브라우저 저장 용량 확인" },
+    { id:"setting-reset", group:"데이터 관리", label:"데이터 초기화", meta:"모든 로컬 데이터 삭제" },
+    { id:"setting-manual", group:"도움말", label:"상세 매뉴얼", meta:"사용법 문서 열기" }
+  ]);
+  const QUICK_MENU_FUNCTION_BY_ID = new Map(QUICK_MENU_FUNCTIONS.map((item) => [item.id, item]));
+  let quickMenuImageSlot = null;
+  let quickMenuIconRenderSerial = 0;
+
+  function quickMenuLibraryIconId(value) { return QUICK_MENU_ICON_BY_ID.has(String(value || "")) ? String(value) : null; }
+  function quickMenuLibraryIcon(entryId) { return QUICK_MENU_ICON_BY_ID.get(quickMenuLibraryIconId(entryId)) || null; }
+  function quickMenuIconThemeLabel(item) { return cleanImportedText(String((item && item.themeLabel) || "루미 기본"), 18).trim() || "루미 기본"; }
+  function quickMenuIconCardMarkup(item, selected, scope) {
+    const target = scope === "project" ? "data-project-library-icon" : "data-qm-library-icon";
+    const classes = scope === "project" ? "project-library-icon-card" : "qm-library-card";
+    const artClass = scope === "project" ? "project-library-art" : "qm-library-art";
+    const selectedClass = scope === "project" ? (selected ? " sel" : "") : (selected ? " is-selected" : "");
+    return `<button type="button" class="${classes}${selectedClass}" ${target}="${esc(item.id)}">${quickMenuLibraryIconMarkup(item.id, artClass)}<span class="li-card-title">${esc(item.label)}</span><small class="li-card-style">${esc(quickMenuIconThemeLabel(item))}</small></button>`;
+  }
+  function uniquifyInlineSvgIds(raw, scope) {
+    const source = String(raw || "");
+    if (!source) return "";
+    const doc = new DOMParser().parseFromString(source, "text/html");
+    const svg = doc.querySelector("svg");
+    if (!svg) return "";
+    const map = new Map();
+    svg.querySelectorAll("[id]").forEach((node) => {
+      const oldId = node.getAttribute("id");
+      if (!oldId) return;
+      const nextId = `${scope}-${oldId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+      map.set(oldId, nextId); node.setAttribute("id", nextId);
+    });
+    const rewrite = (text) => {
+      let out = String(text || "");
+      map.forEach((nextId, oldId) => {
+        const escId = oldId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        out = out.replace(new RegExp(`url\\(\\s*['"]?#${escId}['"]?\\s*\\)`, "g"), `url(#${nextId})`)
+                 .replace(new RegExp(`^#${escId}$`), `#${nextId}`);
+      });
+      return out;
+    };
+    svg.querySelectorAll("*").forEach((node) => {
+      ["fill", "stroke", "filter", "clip-path", "mask", "href", "xlink:href", "style"].forEach((attr) => {
+        if (node.hasAttribute(attr)) node.setAttribute(attr, rewrite(node.getAttribute(attr)));
+      });
+      if (node.tagName && node.tagName.toLowerCase() === "style") node.textContent = rewrite(node.textContent || "");
+    });
+    svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false");
+    return svg.outerHTML;
+  }
+  function quickMenuLibraryIconMarkup(iconId, extraClass) {
+    const item = quickMenuLibraryIcon(iconId);
+    if (!item) return "";
+    const safe = sanitizeQuickMenuSvg(item.svg);
+    if (!safe) return "";
+    const scope = `li-${item.id}-${++quickMenuIconRenderSerial}`;
+    return `<span class="li-vector-icon ${extraClass || ""}" data-li-icon="${esc(item.id)}" title="${esc(item.label || "아이콘")}">${uniquifyInlineSvgIds(safe, scope)}</span>`;
+  }
+
+  function quickMenuFunctionId(value) { return QUICK_MENU_FUNCTION_BY_ID.has(String(value || "")) ? String(value) : "home"; }
+  function quickMenuFunction(value) { return QUICK_MENU_FUNCTION_BY_ID.get(quickMenuFunctionId(value)) || QUICK_MENU_FUNCTION_BY_ID.get("home"); }
+  function emptyQuickMenuSlot(index) {
+    return { slotId: index + 1, kind: null, label: "", thumbnail: null, iconCode: null, libraryIconId: null, functionId: null, targetId: null, createType: null, createMode: "single", createProjectId: null };
+  }
+  function normalizeQuickMenu(raw) {
+    const src = raw && typeof raw === "object" ? (raw.value && typeof raw.value === "object" ? raw.value : raw) : {};
+    const list = Array.isArray(src.slots) ? src.slots : [];
+    const slots = [];
+    for (let i = 0; i < QUICK_MENU_MAX; i++) {
+      const base = emptyQuickMenuSlot(i), item = list[i] && typeof list[i] === "object" ? list[i] : {};
+      // v65.8: 기존 홈 바로가기는 기능 바로가기 안의 home 항목으로 안전하게 승격합니다.
+      const kind = ["function", "project", "note", "create"].includes(item.kind) ? item.kind : (item.kind === "home" ? "function" : null);
+      if (!kind) { slots.push(base); continue; }
+      const thumb = safeImageSource(item.thumbnail);
+      const slot = {
+        slotId: i + 1,
+        kind,
+        label: cleanImportedText(String(item.label || ""), 42).trim(),
+        thumbnail: thumb && thumb.length <= 900000 ? thumb : null,
+        iconCode: normalizeQuickMenuIconCode(item.iconCode),
+        libraryIconId: quickMenuLibraryIconId(item.libraryIconId),
+        functionId: kind === "function" ? quickMenuFunctionId(item.functionId || (item.kind === "home" ? "home" : "home")) : null,
+        targetId: isSafeRecordId(item.targetId) ? item.targetId : null,
+        createType: QUICK_MENU_ALLOWED_TYPES.has(item.createType) ? item.createType : "free",
+        createMode: item.createMode === "collection" ? "collection" : "single",
+        createProjectId: isSafeRecordId(item.createProjectId) ? item.createProjectId : null
+      };
+      if ((kind === "project" || kind === "note") && !slot.targetId) { slots.push(base); continue; }
+      slots.push(slot);
+    }
+    return {
+      version: 6,
+      updatedAt: Number(src.updatedAt) || 0,
+      // v64.9: 기존 퀵 메뉴는 모두 기본형·사용 상태로 자연스럽게 승격합니다.
+      enabled: src.enabled !== false,
+      displayMode: src.displayMode === "mini" ? "mini" : "full",
+      slots
+    };
+  }
+  function quickMenuConfig() {
+    if (!st.quickMenu || !Array.isArray(st.quickMenu.slots)) st.quickMenu = normalizeQuickMenu(st.quickMenu);
+    return st.quickMenu;
+  }
+  function quickMenuIsEnabled() { return quickMenuConfig().enabled !== false; }
+  function quickMenuDisplayModeName(cfg) { return (cfg && cfg.displayMode) === "mini" ? "미니형" : "기본형"; }
+  function quickMenuFilledCount() { return quickMenuConfig().slots.filter((slot) => !!slot.kind).length; }
+  function quickMenuSlotActionName(slot) {
+    if (!slot || !slot.kind) return "빈 슬롯";
+    if (slot.kind === "function") return "기능 바로가기";
+    if (slot.kind === "project") return "프로젝트 바로가기";
+    if (slot.kind === "note") return "내 글 바로가기";
+    return "메모 바로 만들기";
+  }
+  function quickMenuCreateTypeName(slot) {
+    const type = slot && slot.createType;
+    if (type === "persona") return slot.createMode === "collection" ? "다인 페르소나" : "페르소나";
+    if (type === "character") return slot.createMode === "collection" ? "다인 캐릭터" : "캐릭터";
+    return ({ free: "자유 메모", html: "HTML 작업실", lorebook: "로어북", log: "로그 저장", idea: "아이디어 보드" })[type] || "메모";
+  }
+  function quickMenuSlotLabel(slot) {
+    if (!slot || !slot.kind) return "새 슬롯 등록";
+    if (slot.label) return slot.label;
+    if (slot.kind === "function") return quickMenuFunction(slot.functionId).label;
+    if (slot.kind === "project") { const p = getProject(slot.targetId); return p ? p.name : "삭제된 프로젝트"; }
+    if (slot.kind === "note") { const n = getNote(slot.targetId); return n ? (n.title || "제목 없는 메모") : "삭제된 메모"; }
+    return `${quickMenuCreateTypeName(slot)} 만들기`;
+  }
+  function quickMenuSlotMeta(slot) {
+    if (!slot || !slot.kind) return "누르면 바로 등록";
+    if (slot.kind === "function") return quickMenuFunction(slot.functionId).meta;
+    if (slot.kind === "project") return "프로젝트 바로가기";
+    if (slot.kind === "note") {
+      const n = getNote(slot.targetId), p = n && getProject(n.projectId);
+      return n ? `${p ? p.name : "프로젝트 없음"} · ${noteTypeLabel(n)}` : "삭제 시 자동 정리";
+    }
+    const p = slot.createProjectId && getProject(slot.createProjectId);
+    return p ? `${p.name}에 바로 생성` : "현재 프로젝트 · 없으면 선택";
+  }
+  function sanitizeQuickMenuSvg(raw) {
+    const source = cleanImportedText(String(raw || ""), 60000).trim();
+    if (!source || !/<svg\b/i.test(source)) return null;
+    const result = sanitize(source).html;
+    const doc = new DOMParser().parseFromString(result, "text/html");
+    const svg = doc.querySelector("svg");
+    if (!svg) return null;
+    svg.removeAttribute("id");
+    svg.setAttribute("viewBox", svg.getAttribute("viewBox") || "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    return svg.outerHTML;
+  }
+  function sanitizeQuickMenuCssIcon(rawHtml, rawCss) {
+    const markup = cleanImportedText(String(rawHtml || ""), 22000).trim();
+    const css = cleanImportedText(String(rawCss || ""), 36000).trim();
+    if (!markup || !css) return null;
+    const result = sanitize(`<style>${css}</style><div class="qm-custom-art">${markup}</div>`).html;
+    const doc = new DOMParser().parseFromString(result, "text/html");
+    const art = doc.querySelector(".qm-custom-art");
+    if (!art || !art.innerHTML.trim()) return null;
+    const scopedCss = [...doc.querySelectorAll("style")].map((style) => style.textContent || "").join("\n")
+      .replace(/\.lumink-user-html/g, ".quick-menu-custom-icon");
+    if (!scopedCss.trim()) return null;
+    return { html: art.outerHTML, css: scopedCss };
+  }
+  function normalizeQuickMenuIconCode(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (raw.mode === "svg") {
+      const svg = sanitizeQuickMenuSvg(raw.svg || raw.code || "");
+      return svg ? { mode: "svg", svg } : null;
+    }
+    if (raw.mode === "css") {
+      const safe = sanitizeQuickMenuCssIcon(raw.html || raw.markup || "", raw.css || "");
+      return safe ? { mode: "css", html: safe.html, css: safe.css } : null;
+    }
+    return null;
+  }
+  function quickMenuCustomIconMarkup(iconCode) {
+    const icon = normalizeQuickMenuIconCode(iconCode);
+    if (!icon) return "";
+    if (icon.mode === "svg") return `<span class="quick-menu-custom-icon quick-menu-custom-svg">${icon.svg}</span>`;
+    return `<span class="quick-menu-custom-icon quick-menu-custom-css"><style>${String(icon.css || "").replace(/<\/style/gi, "")}</style>${icon.html || ""}</span>`;
+  }
+  function quickMenuIcon(slot) {
+    const kind = slot && slot.kind;
+    if (kind === "function") {
+      const id = quickMenuFunction(slot.functionId).id;
+      const art = {
+        home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1V10Z"/>',
+        settings:'<circle cx="12" cy="12" r="3.1"/><path d="M19.4 13a7.8 7.8 0 0 0 0-2l2-1.5-2-3.4-2.3 1a7.6 7.6 0 0 0-1.7-1l-.3-2.5h-4l-.3 2.5a7.6 7.6 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.6 7.6 0 0 0 1.7-1l2.3 1 2-3.4z"/>',
+        'app-reload':'<path d="M20 11a8.2 8.2 0 1 0 1.1 4.1"/><path d="M20 4v7h-7"/>',
+        'setting-theme':'<circle cx="12" cy="12" r="3.6"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/>',
+        'setting-accent':'<path d="M12 3a9 9 0 1 0 0 18 2.5 2.5 0 0 0 0-5h-1a2 2 0 0 1 0-4h2a3 3 0 0 0 0-6Z"/><circle cx="7.5" cy="11" r=".8" fill="currentColor"/><circle cx="10" cy="7.5" r=".8" fill="currentColor"/><circle cx="14.2" cy="7.2" r=".8" fill="currentColor"/>',
+        'setting-font':'<path d="M5 19 10 5h4l5 14M7.2 14h9.6"/>',
+        'setting-toolbar':'<path d="M4 6h16M4 12h11M4 18h16"/><circle cx="17" cy="12" r="2"/>',
+        'setting-quick-menu':'<path d="M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z"/>',
+        'setting-install':'<path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 18v2h14v-2"/>',
+        'setting-backup':'<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h8V4M8 18h8v-5H8z"/>',
+        'setting-restore':'<path d="M5 8V4h4M5 4a8 8 0 1 1-1 8"/><path d="M12 8v8M8.5 12 12 8l3.5 4"/>',
+        'setting-auto-backup':'<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+        'setting-storage':'<path d="M4 5h16v14H4z"/><path d="M4 9h16M8 13h3M8 16h7"/>',
+        'setting-reset':'<path d="M12 3 2.8 20h18.4Z"/><path d="M12 9v5M12 17h.01"/>',
+        'setting-manual':'<path d="M4 5.5c2.5-1 5.2-.6 8 1.2 2.8-1.8 5.5-2.2 8-1.2v13c-2.5-1-5.2-.6-8 1.2-2.8-1.8-5.5-2.2-8-1.2Z"/><path d="M12 6.7v13"/>'
+      }[id] || '<circle cx="12" cy="12" r="8"/><path d="M12 8v5M12 16h.01"/>';
+      return `<svg viewBox="0 0 24 24" aria-hidden="true">${art}</svg>`;
+    }
+    if (kind === "project") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M3 10h18" opacity=".55"/></svg>';
+    if (kind === "note") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"/><path d="M14 3v4h4M9 11h6M9 15h6"/></svg>';
+    if (kind === "create") return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9" opacity=".45"/></svg>';
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9" opacity=".32"/></svg>';
+  }
+  function quickMenuSlotMedia(slot) {
+    const image = slot && safeImageSource(slot.thumbnail);
+    const code = slot && normalizeQuickMenuIconCode(slot.iconCode);
+    const library = slot && quickMenuLibraryIcon(slot.libraryIconId);
+    // v66.4: 업로드 이미지·내장 라이브러리·사용자 SVG/CSS는 모두 같은 "아트" 타입입니다.
+    // 이 타입은 공통 기능 아이콘 프레임을 상속하지 않으므로 실제 메뉴와 편집 미리보기가 완전히 같은 상태로 그려집니다.
+    const artType = code ? "code" : library ? "library" : image ? "image" : "";
+    const cls = artType ? `qm-art-media has-${artType}-art${code ? " has-code-icon" : ""}${library ? " has-library-icon" : ""}${image ? " has-image-art" : ""}` : "";
+    const content = code ? quickMenuCustomIconMarkup(code) : (image ? `<img src="${esc(image)}" alt="">` : (library ? quickMenuLibraryIconMarkup(library.id, "quick-menu-library-icon") : quickMenuIcon(slot)));
+    return `<span class="quick-slot-media ${cls}"${artType ? ` data-qm-art="${artType}"` : ""}>${content}</span>`;
+  }
+  function quickMenuSlotMarkup(slot, index, manager) {
+    const filled = !!(slot && slot.kind), cls = filled ? "is-filled" : "is-empty";
+    const label = quickMenuSlotLabel(slot), meta = quickMenuSlotMeta(slot);
+    if (manager) {
+      return `<button type="button" class="qm-manager-slot ${cls}" data-qm-manage-slot="${index}">${quickMenuSlotMedia(slot)}<span class="qm-manager-copy"><b>${esc(label)}</b><small>${esc(filled ? `${quickMenuSlotActionName(slot)} · ${meta}` : "동작과 썸네일을 등록할 수 있어요")}</small></span><span class="qm-manager-index">SLOT ${String(index + 1).padStart(2, "0")}</span></button>`;
+    }
+    const aria = filled ? `${quickMenuSlotActionName(slot)}: ${label}` : `빈 슬롯 ${index + 1} 등록`;
+    return `<button type="button" class="quick-menu-slot ${cls}" aria-label="${esc(aria)}" title="${esc(label)}" ${filled ? `data-qm-run="${index}"` : `data-qm-empty="${index}"`}>${quickMenuSlotMedia(slot)}<span class="quick-slot-copy"><b>${esc(label)}</b><small>${esc(meta)}</small></span><span class="quick-slot-arrow" aria-hidden="true">${filled ? "›" : "+"}</span><span class="quick-slot-num">${String(index + 1).padStart(2, "0")}</span></button>`;
+  }
+  function setQuickMenuOpen(open) {
+    const on = !!open && quickMenuIsEnabled();
+    document.body.classList.toggle("quick-menu-open", on);
+    const tab = $("quickMenuTab"); if (tab) { tab.setAttribute("aria-expanded", String(on)); tab.setAttribute("aria-label", on ? "퀵 메뉴 접기" : "퀵 메뉴 펼치기"); }
+  }
+  function renderQuickMenu() {
+    const box = $("quickMenuSlots"), count = $("quickMenuCount"), settingSub = $("setQuickMenuSub"), settingVal = $("setQuickMenuVal"), root = $("quickMenu");
+    const cfg = quickMenuConfig(), enabled = cfg.enabled !== false, mini = cfg.displayMode === "mini";
+    if (root) {
+      root.hidden = !enabled;
+      root.classList.toggle("is-mini", mini);
+      root.setAttribute("aria-hidden", String(!enabled));
+    }
+    document.body.classList.toggle("quick-menu-disabled", !enabled);
+    if (!enabled && document.body.classList.contains("quick-menu-open")) setQuickMenuOpen(false);
+    if (box) {
+      const markup = cfg.slots.map((slot, index) => quickMenuSlotMarkup(slot, index, false)).join("");
+      // 화면 전환마다 동일한 슬롯을 재삽입하면 fixed 패널의 높이·중심점이 미세하게 다시 계산될 수 있어요.
+      // 내용이 실제로 달라졌을 때만 교체해서 위치 흔들림을 막습니다.
+      if (box.dataset.qmMarkup !== markup) {
+        box.dataset.qmMarkup = markup;
+        box.innerHTML = markup;
+        box.querySelectorAll("[data-qm-run]").forEach((button) => button.addEventListener("click", () => { void runQuickMenuSlot(Number(button.dataset.qmRun)); }));
+        box.querySelectorAll("[data-qm-empty]").forEach((button) => button.addEventListener("click", () => { setQuickMenuOpen(false); openQuickMenuSlotTypePicker(Number(button.dataset.qmEmpty)); }));
+      }
+    }
+    const filled = quickMenuFilledCount();
+    if (count) count.textContent = `${filled} / ${QUICK_MENU_MAX} 등록`;
+    if (settingSub) settingSub.textContent = enabled ? `오른쪽 가장자리 · ${quickMenuDisplayModeName(cfg)} · ${filled}/${QUICK_MENU_MAX} 등록` : "사용 안 함 · 퀵 메뉴 탭 숨김";
+    if (settingVal) settingVal.textContent = enabled ? `${quickMenuDisplayModeName(cfg)} ›` : "꺼짐 ›";
+  }
+  async function persistQuickMenu(options) {
+    const opt = options || {}, cfg = normalizeQuickMenu(quickMenuConfig());
+    cfg.updatedAt = now(); st.quickMenu = cfg;
+    await put("settings", { id: QUICK_MENU_SETTING_ID, value: jsonCopy(cfg), updatedAt: cfg.updatedAt });
+    if (opt.backup !== false) triggerAutoBackup();
+    renderQuickMenu();
+    if (typeof curView === "function" && curView().s === "settings") renderSettings();
+  }
+  async function loadQuickMenuSetting() {
+    try {
+      const row = await getOne("settings", QUICK_MENU_SETTING_ID);
+      st.quickMenu = normalizeQuickMenu(row && row.value);
+    } catch (e) { st.quickMenu = normalizeQuickMenu(null); }
+    const changed = await pruneQuickMenuReferences(false);
+    if (changed) await persistQuickMenu({ backup: false });
+    renderQuickMenu();
+  }
+  async function restoreQuickMenuConfig(value) {
+    if (!value || typeof value !== "object") return;
+    st.quickMenu = normalizeQuickMenu(value);
+    await pruneQuickMenuReferences(false);
+    await persistQuickMenu({ backup: false });
+  }
+  async function pruneQuickMenuReferences(shouldPersist) {
+    const cfg = quickMenuConfig(); let changed = false;
+    cfg.slots.forEach((slot, index) => {
+      if (!slot || !slot.kind) return;
+      if (slot.kind === "project" && !getProject(slot.targetId)) { cfg.slots[index] = emptyQuickMenuSlot(index); changed = true; return; }
+      if (slot.kind === "note" && !getNote(slot.targetId)) { cfg.slots[index] = emptyQuickMenuSlot(index); changed = true; return; }
+      if (slot.kind === "create" && slot.createProjectId && !getProject(slot.createProjectId)) { slot.createProjectId = null; changed = true; }
+    });
+    if (changed && shouldPersist) await persistQuickMenu({ backup: false });
+    else if (changed) renderQuickMenu();
+    return changed;
+  }
+  function replaceQuickMenuSlot(index, next) {
+    const cfg = quickMenuConfig(), old = cfg.slots[index] || emptyQuickMenuSlot(index);
+    cfg.slots[index] = Object.assign(emptyQuickMenuSlot(index), {
+      thumbnail: old.thumbnail || null,
+      iconCode: normalizeQuickMenuIconCode(old.iconCode),
+      label: old.label || ""
+    }, next || {});
+    return cfg.slots[index];
+  }
+  async function setQuickMenuSlot(index, next, options) {
+    if (!Number.isInteger(index) || index < 0 || index >= QUICK_MENU_MAX) return;
+    replaceQuickMenuSlot(index, next);
+    await persistQuickMenu(options);
+  }
+  async function clearQuickMenuSlot(index) {
+    const cfg = quickMenuConfig(); cfg.slots[index] = emptyQuickMenuSlot(index);
+    await persistQuickMenu();
+  }
+  async function quickThumbnailFromFile(file) {
+    const { img, url } = await validateImageFile(file, { maxBytes: 4 * 1024 * 1024, maxPixels: 12 * 1000 * 1000, limitText: "퀵 메뉴 썸네일은 4MB 이하, 1,200만 픽셀 이하만 사용할 수 있어요" });
+    try {
+      const side = Math.min(img.naturalWidth, img.naturalHeight), sx = Math.max(0, Math.round((img.naturalWidth - side) / 2)), sy = Math.max(0, Math.round((img.naturalHeight - side) / 2));
+      const canvas = document.createElement("canvas"); canvas.width = 320; canvas.height = 320;
+      canvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, 320, 320);
+      return canvas.toDataURL("image/jpeg", .86);
+    } finally { URL.revokeObjectURL(url); }
+  }
+  async function openQuickMenuStorageInfo() {
+    const val = $("setStorageVal")?.textContent || "저장공간", sub = $("setStorageSub")?.textContent || "브라우저 저장소 사용량을 확인합니다.";
+    openModal(`<h3>저장공간</h3><p class="m-sub"><b>${esc(val)}</b><br>${esc(sub)}<br><br>표시 용량은 이 사이트가 브라우저에 저장한 데이터와 자동 백업을 포함해요. 이미지가 많을수록 자동 백업도 함께 커집니다.</p><div class="m-row"><button class="m-btn primary" id="storageClose">확인</button></div>`);
+    $on("storageClose", "click", closeModal);
+  }
+  async function openInstallStartPage() { await flushPending(); window.location.href = "./lumi-ink-get-started.html?from=app"; }
+  async function openManualPage() { await flushPending(); window.location.href = "./Lumi_Ink_Manual_1.html?from=app"; }
+  async function runQuickMenuFunction(functionId) {
+    const id = quickMenuFunction(functionId).id;
+    setQuickMenuOpen(false);
+    if (id === "home") { await goHome(); return; }
+    if (id === "settings") { await flushPending(); go({ s:"settings" }); return; }
+    if (id === "app-reload") { await flushPending(); window.location.reload(); return; }
+    if (id === "setting-theme") { applyTheme(st.theme === "light" ? "dark" : "light"); renderSettings(); return; }
+    if (id === "setting-accent") { openAccentPicker(); return; }
+    if (id === "setting-font") { showFontDialog(); return; }
+    if (id === "setting-toolbar") { openFormatbarModePicker(); return; }
+    if (id === "setting-quick-menu") { openQuickMenuSettings(); return; }
+    if (id === "setting-install") { await openInstallStartPage(); return; }
+    if (id === "setting-backup") { await exportBackup(); return; }
+    if (id === "setting-restore") { $("restoreInput")?.click(); return; }
+    if (id === "setting-auto-backup") { openAutoBackupList(); return; }
+    if (id === "setting-storage") { await openQuickMenuStorageInfo(); return; }
+    if (id === "setting-reset") { resetData(); return; }
+    if (id === "setting-manual") { await openManualPage(); }
+  }
+  async function runQuickMenuSlot(index) {
+    const slot = quickMenuConfig().slots[index];
+    if (!slot || !slot.kind) { openQuickMenuSlotTypePicker(index); return; }
+    if (slot.kind === "function") { await runQuickMenuFunction(slot.functionId); return; }
+    if (slot.kind === "project") {
+      const p = getProject(slot.targetId);
+      if (!p) { await pruneQuickMenuReferences(true); toast("삭제된 프로젝트 바로가기를 정리했어요"); return; }
+      setQuickMenuOpen(false); await openProject(p.id); return;
+    }
+    if (slot.kind === "note") {
+      const n = getNote(slot.targetId);
+      if (!n) { await pruneQuickMenuReferences(true); toast("삭제된 메모 바로가기를 정리했어요"); return; }
+      setQuickMenuOpen(false); await openNote(n.id); return;
+    }
+    setQuickMenuOpen(false);
+    const configured = slot.createProjectId && getProject(slot.createProjectId);
+    const current = st.curProjectId && getProject(st.curProjectId);
+    const pid = (configured || current) && (configured || current).id;
+    if (pid) { await quickCreateFromSlot(slot, pid); return; }
+    pickTargetProject(null, (projectId) => { void quickCreateFromSlot(slot, projectId); });
+  }
+  async function quickCreateFromSlot(slot, projectId) {
+    const type = QUICK_MENU_ALLOWED_TYPES.has(slot.createType) ? slot.createType : "free";
+    const p = getProject(projectId); if (!p) { toast("저장할 프로젝트를 찾지 못했어요"); return; }
+    try {
+      await flushPending();
+      const n = await createNote(type, p.id, (type === "persona" || type === "character") ? { characterMode: slot.createMode === "collection" ? "collection" : "single" } : null);
+      triggerAutoBackup();
+      await openNote(n.id);
+    } catch (e) { console.warn("quick menu create", e); toast("새 메모를 만들지 못했어요"); }
+  }
+  function openQuickMenuSettings() {
+    const cfg = quickMenuConfig(), enabled = cfg.enabled !== false, mode = cfg.displayMode === "mini" ? "mini" : "full";
+    const modePreview = (kind) => kind === "mini"
+      ? `<span class="qm-display-schematic mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>`
+      : `<span class="qm-display-schematic full" aria-hidden="true"><i></i><i></i><i></i></span>`;
+    openModal(`<h3>퀵 메뉴 설정</h3><p class="m-sub">오른쪽 가장자리에서 빠르게 꺼내 쓰는 개인 런처예요. 숨기더라도 슬롯과 썸네일 구성은 그대로 보관됩니다.</p>
+      <div class="qm-settings-card">
+        <button type="button" class="qm-settings-toggle" id="qmToggleEnabled" role="switch" aria-checked="${enabled ? "true" : "false"}">
+          <span class="qm-settings-toggle-copy"><b>퀵 메뉴 사용</b><small>${enabled ? "오른쪽 엣지 탭과 슬라이드 동작이 켜져 있어요" : "탭과 엣지 슬라이드는 숨겨진 상태예요"}</small></span>
+          <span class="lore-switch ${enabled ? "on" : ""}" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div class="qm-settings-section"><div class="qm-settings-section-title">표시 형태</div><div class="qm-display-options">
+        <button type="button" class="qm-display-option ${mode === "full" ? "is-active" : ""}" data-qm-display-mode="full">${modePreview("full")}<span><b>기본형</b><small>아이콘 · 제목 · 설명을 함께 표시</small></span></button>
+        <button type="button" class="qm-display-option ${mode === "mini" ? "is-active" : ""}" data-qm-display-mode="mini">${modePreview("mini")}<span><b>미니형</b><small>설명 없이 아이콘만 간결하게 표시</small></span></button>
+      </div></div>
+      <div class="qm-settings-manage"><span><b>등록한 바로가기</b><small>${quickMenuFilledCount()} / ${QUICK_MENU_MAX} 슬롯 사용 중</small></span><button type="button" class="m-btn primary" id="qmOpenManager">슬롯 편집</button></div>
+      <div class="m-row"><button class="m-btn" id="qmSettingsClose">닫기</button></div>`);
+    $on("qmToggleEnabled", "click", async () => {
+      quickMenuConfig().enabled = !quickMenuIsEnabled();
+      await persistQuickMenu();
+      openQuickMenuSettings();
+    });
+    $("modalBox").querySelectorAll("[data-qm-display-mode]").forEach((button) => button.addEventListener("click", async () => {
+      const next = button.dataset.qmDisplayMode === "mini" ? "mini" : "full";
+      if (quickMenuConfig().displayMode === next) return;
+      quickMenuConfig().displayMode = next;
+      await persistQuickMenu();
+      openQuickMenuSettings();
+    }));
+    $on("qmOpenManager", "click", openQuickMenuManager);
+    $on("qmSettingsClose", "click", closeModal);
+  }
+
+  function openQuickMenuManager() {
+    const cfg = quickMenuConfig();
+    openModal(`<h3>퀵 메뉴 편집</h3><p class="m-sub">화면 오른쪽의 숨김 탭을 밀어 펼치면 사용할 최대 7개의 바로가기를 정해요. 등록 대상이 삭제되면 해당 슬롯은 자동으로 비워집니다.</p><div class="qm-manager-grid">${cfg.slots.map((slot, index) => quickMenuSlotMarkup(slot, index, true)).join("")}</div><div class="m-row"><button class="m-btn" id="qmManagerClose">닫기</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-manage-slot]").forEach((button) => button.addEventListener("click", () => {
+      const index = Number(button.dataset.qmManageSlot), slot = quickMenuConfig().slots[index];
+      if (slot && slot.kind) openQuickMenuSlotEditor(index); else openQuickMenuSlotTypePicker(index);
+    }));
+    $on("qmManagerClose", "click", closeModal);
+  }
+  function openQuickMenuSlotTypePicker(index) {
+    const blank = emptyQuickMenuSlot(index);
+    openModal(`<h3>슬롯 ${index + 1} 등록</h3><p class="m-sub">바로 실행할 동작을 고르세요. 썸네일과 표시 이름은 다음 화면에서 바꿀 수 있어요.</p><div class="qm-choice-list">
+      <button type="button" class="qm-choice" data-qm-kind="function">${quickMenuSlotMedia(Object.assign(blank,{kind:"function",functionId:"home"}))}<span class="qm-choice-copy"><b>기능 바로가기</b><small>홈 · 설정 · 설정 목록의 기능을 바로 실행</small></span><span class="qm-choice-arrow">›</span></button>
+      <button type="button" class="qm-choice" data-qm-kind="project">${quickMenuSlotMedia(Object.assign(blank,{kind:"project"}))}<span class="qm-choice-copy"><b>프로젝트 바로가기</b><small>특정 프로젝트를 한 번에 열기</small></span><span class="qm-choice-arrow">›</span></button>
+      <button type="button" class="qm-choice" data-qm-kind="note">${quickMenuSlotMedia(Object.assign(blank,{kind:"note"}))}<span class="qm-choice-copy"><b>내 글 바로가기</b><small>특정 메모를 바로 열기 · 이동 경로 자동 반영</small></span><span class="qm-choice-arrow">›</span></button>
+      <button type="button" class="qm-choice" data-qm-kind="create">${quickMenuSlotMedia(Object.assign(blank,{kind:"create"}))}<span class="qm-choice-copy"><b>메모 바로 만들기</b><small>메모 타입과 저장 위치를 미리 지정</small></span><span class="qm-choice-arrow">›</span></button>
+    </div><div class="m-row"><button class="m-btn" id="qmTypeCancel">취소</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-kind]").forEach((button) => button.addEventListener("click", async () => {
+      const kind = button.dataset.qmKind;
+      if (kind === "function") openQuickMenuFunctionPicker(index);
+      else if (kind === "project") openQuickMenuProjectPicker(index);
+      else if (kind === "note") openQuickMenuNotePicker(index);
+      else openQuickMenuCreateTypePicker(index);
+    }));
+    $on("qmTypeCancel", "click", closeModal);
+  }
+  function openQuickMenuFunctionPicker(index) {
+    const blank = emptyQuickMenuSlot(index);
+    const groups = [...new Set(QUICK_MENU_FUNCTIONS.map((item) => item.group))];
+    const groupMarkup = groups.map((group) => {
+      const rows = QUICK_MENU_FUNCTIONS.filter((item) => item.group === group).map((item) => `<button type="button" class="qm-picker-row qm-function-row" data-qm-function="${esc(item.id)}">${quickMenuSlotMedia(Object.assign(blank,{kind:"function",functionId:item.id}))}<span><b>${esc(item.label)}</b><small>${esc(item.meta)}</small></span><i>›</i></button>`).join("");
+      return `<section class="qm-function-group"><h4>${esc(group)}</h4><div class="qm-picker-list">${rows}</div></section>`;
+    }).join("");
+    openModal(`<h3>기능 바로가기</h3><p class="m-sub">홈과 설정 화면, 그리고 설정 목록의 각 기능을 퀵 메뉴 슬롯에 바로 연결할 수 있어요.</p><div class="qm-function-picker">${groupMarkup}</div><div class="m-row"><button class="m-btn" id="qmFunctionBack">뒤로</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-function]").forEach((button) => button.addEventListener("click", async () => {
+      await setQuickMenuSlot(index, { kind:"function", functionId:button.dataset.qmFunction });
+      openQuickMenuSlotEditor(index);
+    }));
+    $on("qmFunctionBack", "click", () => openQuickMenuSlotTypePicker(index));
+  }
+
+  function openQuickMenuProjectPicker(index) {
+    const list = st.projects.slice().sort((a,b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    openModal(`<h3>프로젝트 바로가기</h3><p class="m-sub">삭제되면 이 퀵 메뉴 슬롯도 자동으로 비워집니다.</p><div class="qm-picker-list">${list.length ? list.map((p) => `<button type="button" class="qm-picker-row" data-qm-project="${esc(p.id)}"><b>${esc(p.name)}</b><small>${esc(p.description || "프로젝트 열기")}</small></button>`).join("") : '<div class="qm-picker-empty">먼저 프로젝트를 만들어 주세요.</div>'}</div><div class="m-row"><button class="m-btn" id="qmProjectBack">뒤로</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-project]").forEach((button) => button.addEventListener("click", async () => {
+      await setQuickMenuSlot(index, { kind: "project", targetId: button.dataset.qmProject }); openQuickMenuSlotEditor(index);
+    }));
+    $on("qmProjectBack", "click", () => openQuickMenuSlotTypePicker(index));
+  }
+  function openQuickMenuNotePicker(index) {
+    let query = "";
+    const draw = () => {
+      const host = $("qmNoteList"); if (!host) return;
+      const q = query.trim().toLocaleLowerCase("ko");
+      const list = st.notes.slice().filter((n) => !q || `${n.title || ""} ${getProject(n.projectId)?.name || ""} ${noteTypeLabel(n)}`.toLocaleLowerCase("ko").includes(q)).sort((a,b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      host.innerHTML = list.length ? list.map((n) => { const p = getProject(n.projectId); return `<button type="button" class="qm-picker-row" data-qm-note="${esc(n.id)}"><b>${esc(n.title || "제목 없는 메모")}</b><small>${esc(`${p ? p.name : "프로젝트 없음"} · ${noteTypeLabel(n)}`)}</small></button>`; }).join("") : '<div class="qm-picker-empty">일치하는 메모가 없어요.</div>';
+      host.querySelectorAll("[data-qm-note]").forEach((button) => button.addEventListener("click", async () => { await setQuickMenuSlot(index, { kind: "note", targetId: button.dataset.qmNote }); openQuickMenuSlotEditor(index); }));
+    };
+    openModal(`<h3>내 글 바로가기</h3><p class="m-sub">메모가 다른 프로젝트로 이동해도 이 바로가기는 같은 글을 따라가요.</p><input class="m-input" id="qmNoteSearch" type="search" autocomplete="off" placeholder="제목 또는 프로젝트 검색"><div class="qm-picker-list" id="qmNoteList"></div><div class="m-row"><button class="m-btn" id="qmNoteBack">뒤로</button></div>`);
+    $on("qmNoteSearch", "input", (event) => { query = event.target.value || ""; draw(); });
+    $on("qmNoteBack", "click", () => openQuickMenuSlotTypePicker(index)); draw();
+  }
+  function openQuickMenuCreateTypePicker(index) {
+    const options = [
+      ["free", "single", "자유 메모", "바로 빈 문서 열기"], ["html", "single", "HTML 작업실", "HTML 원본 작업 시작"], ["lorebook", "single", "로어북", "World Info용 항목 만들기"], ["log", "single", "로그 저장", "대화 로그용 메모 만들기"],
+      ["persona", "single", "페르소나", "단일 페르소나 카드"], ["persona", "collection", "다인 페르소나", "페르소나 모음 카드"], ["character", "single", "캐릭터", "단일 캐릭터 카드"], ["character", "collection", "다인 캐릭터", "캐릭터 모음 카드"], ["idea", "single", "아이디어 보드", "자유 배치 보드 만들기"]
+    ];
+    openModal(`<h3>만들 메모 타입</h3><p class="m-sub">실행하면 이 타입의 새 메모를 바로 만듭니다.</p><div class="qm-picker-list">${options.map(([type, mode, label, desc]) => `<button type="button" class="qm-picker-row" data-qm-create-type="${type}" data-qm-create-mode="${mode}"><b>${esc(label)}</b><small>${esc(desc)}</small></button>`).join("")}</div><div class="m-row"><button class="m-btn" id="qmCreateTypeBack">뒤로</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-create-type]").forEach((button) => button.addEventListener("click", () => openQuickMenuCreateProjectPicker(index, { createType: button.dataset.qmCreateType, createMode: button.dataset.qmCreateMode })));
+    $on("qmCreateTypeBack", "click", () => openQuickMenuSlotTypePicker(index));
+  }
+  function openQuickMenuCreateProjectPicker(index, draft) {
+    const projects = st.projects.slice().sort((a,b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    openModal(`<h3>새 메모 저장 위치</h3><p class="m-sub">고정 프로젝트를 고르면 한 번에 생성합니다. ‘현재 프로젝트’는 열고 있는 프로젝트가 없을 때만 선택창을 보여줘요.</p><div class="qm-picker-list"><button type="button" class="qm-picker-row" id="qmCreateCurrent"><b>현재 프로젝트에 만들기</b><small>홈에서는 실행할 때 프로젝트 선택</small></button>${projects.map((p) => `<button type="button" class="qm-picker-row" data-qm-create-project="${esc(p.id)}"><b>${esc(p.name)}</b><small>이 프로젝트에 바로 생성</small></button>`).join("")}</div><div class="m-row"><button class="m-btn" id="qmCreateProjectBack">뒤로</button></div>`);
+    $on("qmCreateCurrent", "click", async () => { await setQuickMenuSlot(index, { kind: "create", createType: draft.createType, createMode: draft.createMode, createProjectId: null }); openQuickMenuSlotEditor(index); });
+    $("modalBox").querySelectorAll("[data-qm-create-project]").forEach((button) => button.addEventListener("click", async () => { await setQuickMenuSlot(index, { kind: "create", createType: draft.createType, createMode: draft.createMode, createProjectId: button.dataset.qmCreateProject }); openQuickMenuSlotEditor(index); }));
+    $on("qmCreateProjectBack", "click", () => openQuickMenuCreateTypePicker(index));
+  }
+  function openQuickMenuIconCodeEditor(index, draft) {
+    const slot = quickMenuConfig().slots[index]; if (!slot || !slot.kind) { openQuickMenuSlotTypePicker(index); return; }
+    const existing = normalizeQuickMenuIconCode(slot.iconCode);
+    const state = Object.assign({ mode: existing ? existing.mode : "svg", svg: existing && existing.mode === "svg" ? existing.svg : "", html: existing && existing.mode === "css" ? existing.html : "", css: existing && existing.mode === "css" ? existing.css : "" }, draft || {});
+    const svgMode = state.mode !== "css";
+    const body = svgMode
+      ? `<label class="qm-editor-label" for="qmIconSvg">SVG 코드</label><textarea class="m-input qm-code-input" id="qmIconSvg" spellcheck="false" placeholder="&lt;svg viewBox=&quot;0 0 24 24&quot; ...&gt;...&lt;/svg&gt;">${esc(state.svg || "")}</textarea><p class="qm-code-hint">외부 이미지·스크립트·&lt;foreignObject&gt;는 자동으로 제거됩니다. viewBox가 있는 단일 SVG를 권장해요.</p>`
+      : `<label class="qm-editor-label" for="qmIconMarkup">HTML 마크업</label><textarea class="m-input qm-code-input qm-code-short" id="qmIconMarkup" spellcheck="false" placeholder="&lt;span class=&quot;orb&quot;&gt;&lt;/span&gt;">${esc(state.html || "")}</textarea><label class="qm-editor-label" for="qmIconCss">CSS 코드</label><textarea class="m-input qm-code-input" id="qmIconCss" spellcheck="false" placeholder=".orb { width:100%; height:100%; border-radius:50%; ... }">${esc(state.css || "")}</textarea><p class="qm-code-hint">CSS는 이 슬롯의 아이콘 영역 안으로만 자동 한정됩니다. 외부 URL·스크립트형 CSS는 저장되지 않습니다.</p>`;
+    openModal(`<h3>슬롯 ${index + 1} 코드 아이콘</h3><p class="m-sub">이미지 업로드 대신 복붙 가능한 SVG 또는 CSS+마크업 아이콘을 등록합니다. 기본 아이콘과 사용자 썸네일은 그대로 보관돼요.</p><div class="qm-code-tabs"><button type="button" class="qm-code-tab ${svgMode ? "is-active" : ""}" id="qmIconModeSvg">SVG 코드</button><button type="button" class="qm-code-tab ${!svgMode ? "is-active" : ""}" id="qmIconModeCss">CSS + 마크업</button></div>${body}<div class="m-row"><button class="m-btn" id="qmIconCodeBack">뒤로</button>${existing ? '<button class="m-btn danger" id="qmIconCodeReset">코드 아이콘 해제</button>' : ''}<button class="m-btn primary" id="qmIconCodeSave">등록</button></div>`);
+    const currentDraft = () => ({ mode: svgMode ? "svg" : "css", svg: svgMode ? ($("qmIconSvg")?.value || "") : "", html: !svgMode ? ($("qmIconMarkup")?.value || "") : "", css: !svgMode ? ($("qmIconCss")?.value || "") : "" });
+    $on("qmIconModeSvg", "click", () => openQuickMenuIconCodeEditor(index, Object.assign(currentDraft(), { mode: "svg" })));
+    $on("qmIconModeCss", "click", () => openQuickMenuIconCodeEditor(index, Object.assign(currentDraft(), { mode: "css" })));
+    $on("qmIconCodeBack", "click", () => openQuickMenuSlotEditor(index));
+    $on("qmIconCodeReset", "click", async () => { quickMenuConfig().slots[index].iconCode = null; await persistQuickMenu(); openQuickMenuSlotEditor(index); });
+    $on("qmIconCodeSave", "click", async () => {
+      const value = currentDraft();
+      const safe = normalizeQuickMenuIconCode(value);
+      if (!safe) { toast(svgMode ? "유효한 SVG 코드를 찾지 못했어요" : "유효한 CSS 아이콘 마크업과 CSS를 입력해 주세요"); return; }
+      const current = quickMenuConfig().slots[index];
+      current.iconCode = safe; current.thumbnail = null; current.libraryIconId = null;
+      await persistQuickMenu();
+      openQuickMenuSlotEditor(index);
+    });
+  }
+  function openQuickMenuBuiltinIconPicker(index, category) {
+    const slot = quickMenuConfig().slots[index]; if (!slot) return;
+    const active = QUICK_MENU_ICON_CATEGORIES.some((row) => row[0] === category) ? category : "all";
+    const available = QUICK_MENU_ICON_LIBRARY.filter((item) => active === "all" || item.category === active);
+    const tabs = QUICK_MENU_ICON_CATEGORIES.map(([key, label]) => `<button type="button" class="qm-library-tab ${key === active ? "is-active" : ""}" data-qm-library-tab="${key}">${label}</button>`).join("");
+    const cards = available.map((item) => quickMenuIconCardMarkup(item, slot.libraryIconId === item.id, "quick")).join("");
+    openModal(`<h3>퀵메뉴 아이콘 모음</h3><p class="m-sub">루미잉크 벡터 아이콘 ${QUICK_MENU_ICON_LIBRARY.length}종입니다. 선택하면 해당 슬롯의 코드 아이콘과 사용자 썸네일은 해제되고, 테마에 반응하는 벡터 아이콘으로 바뀝니다.</p><div class="qm-library-tabs">${tabs}</div><div class="qm-library-grid">${cards}</div><div class="m-row"><button class="m-btn" id="qmLibraryBack">뒤로</button></div>`);
+    $("modalBox").querySelectorAll("[data-qm-library-tab]").forEach((button) => button.addEventListener("click", () => openQuickMenuBuiltinIconPicker(index, button.dataset.qmLibraryTab)));
+    $("modalBox").querySelectorAll("[data-qm-library-icon]").forEach((button) => button.addEventListener("click", async () => {
+      const id = quickMenuLibraryIconId(button.dataset.qmLibraryIcon); if (!id) return;
+      const current = quickMenuConfig().slots[index]; current.libraryIconId = id; current.thumbnail = null; current.iconCode = null;
+      await persistQuickMenu(); openQuickMenuSlotEditor(index);
+    }));
+    $on("qmLibraryBack", "click", () => openQuickMenuSlotEditor(index));
+  }
+
+  function openQuickMenuSlotEditor(index) {
+    const slot = quickMenuConfig().slots[index]; if (!slot || !slot.kind) { openQuickMenuSlotTypePicker(index); return; }
+    openModal(`<h3>슬롯 ${index + 1} 편집</h3><p class="m-sub">기본 아이콘, 사용자 썸네일, 또는 SVG/CSS 코드 아이콘 중 원하는 방식을 등록할 수 있어요.</p><div class="qm-entry-preview">${quickMenuSlotMedia(slot)}<span class="qm-entry-preview-copy"><b>${esc(quickMenuSlotLabel(slot))}</b><small>${esc(`${quickMenuSlotActionName(slot)} · ${quickMenuSlotMeta(slot)}`)}</small></span></div><label class="qm-editor-label" for="qmSlotLabel">표시 이름 <span style="font-weight:500">(비우면 대상 이름을 자동 표시)</span></label><input class="m-input" id="qmSlotLabel" maxlength="42" value="${esc(slot.label || "")}" placeholder="예: 진행 중인 세계관"><div class="qm-editor-actions"><button class="m-btn" id="qmChangeAction">동작 변경</button><button class="m-btn" id="qmBuiltinIcon">아이콘 모음</button><button class="m-btn" id="qmThumbPick">썸네일 업로드</button><button class="m-btn" id="qmCodeIcon">SVG/CSS 아이콘</button><button class="m-btn qm-wide" id="qmDefaultIcon">기본 설정</button><button class="m-btn danger qm-wide" id="qmSlotDelete">이 슬롯 비우기</button></div><div class="m-row"><button class="m-btn" id="qmEditorBack">목록</button><button class="m-btn primary" id="qmEditorSave">저장</button></div>`);
+    const saveLabel = async (stay) => {
+      const cfg = quickMenuConfig(), current = cfg.slots[index]; if (!current) return;
+      current.label = cleanImportedText($("qmSlotLabel").value || "", 42).trim(); await persistQuickMenu();
+      if (stay) openQuickMenuManager(); else closeModal();
+    };
+    $on("qmChangeAction", "click", async () => { quickMenuConfig().slots[index].label = cleanImportedText($("qmSlotLabel").value || "", 42).trim(); await persistQuickMenu(); openQuickMenuSlotTypePicker(index); });
+    $on("qmBuiltinIcon", "click", async () => { quickMenuConfig().slots[index].label = cleanImportedText($("qmSlotLabel").value || "", 42).trim(); await persistQuickMenu(); openQuickMenuBuiltinIconPicker(index); });
+    $on("qmThumbPick", "click", async () => { quickMenuConfig().slots[index].label = cleanImportedText($("qmSlotLabel").value || "", 42).trim(); await persistQuickMenu(); quickMenuImageSlot = index; $("quickMenuImageInput").click(); });
+    $on("qmCodeIcon", "click", async () => { quickMenuConfig().slots[index].label = cleanImportedText($("qmSlotLabel").value || "", 42).trim(); await persistQuickMenu(); openQuickMenuIconCodeEditor(index); });
+    $on("qmDefaultIcon", "click", async () => { const current = quickMenuConfig().slots[index]; current.thumbnail = null; current.iconCode = null; current.libraryIconId = null; await persistQuickMenu(); toast("기본 아이콘으로 되돌렸어요"); openQuickMenuSlotEditor(index); });
+    $on("qmSlotDelete", "click", () => confirmModal("퀵 메뉴 슬롯 비우기", `슬롯 ${index + 1}의 바로가기와 사용자 지정 아이콘을 지울까요?`, "비우기", true, async () => { await clearQuickMenuSlot(index); openQuickMenuManager(); }));
+    $on("qmEditorBack", "click", () => { void saveLabel(true); });
+    $on("qmEditorSave", "click", () => { void saveLabel(false); });
+  }
+
   /* ---------- crash-safe local drafts ---------- */
   const DRAFT_PREFIX = "lumink:draft:v1:";
   const DRAFT_MAX_CHARS = 700000;
@@ -121,8 +696,11 @@
   function logDraftFromEditor(n) {
     const d = jsonCopy((n && n.data) || {}) || {};
     d.content = $("logEdit").value;
-    d.personaNames = [...document.querySelectorAll("#logMaskNames .log-mask-name")].map((input) => input.value.trim()).filter(Boolean);
-    d.personaAlias = $("logMaskAlias").value;
+    // 이름 바꾸기 세트는 전용 팝업에서 즉시 저장합니다. 본문 자동저장은
+    // 이미 저장된 다섯 세트를 보존한 채 원문만 갱신합니다.
+    d.nameSets = normalizeLogNameSets(d.nameSets, d.personaNames, d.personaAlias);
+    d.personaNames = d.nameSets[0].names.slice();
+    d.personaAlias = d.nameSets[0].replacement;
     delete d.personaName;
     return d;
   }
@@ -233,6 +811,7 @@
     else if (v.s === "idea") renderIdeaBoard();
     else if (v.s === "settings") renderSettings();
     else if (v.s === "search") renderSearch();
+    renderQuickMenu();
   }
   let navTransition = false;
   function commitGo(view) { st.viewStack.push(normalizeRouteView(view)); history.pushState({ d: st.viewStack.length }, ""); render(); }
@@ -410,7 +989,9 @@
 
   /* ---------- renderers ---------- */
   function projectThumbMedia(p) {
-    return `<div class="thumb-media">${p && p.icon ? `<img src="${p.icon}" alt="">` : '<span class="deflogo"></span>'}</div>`;
+    const libraryId = p && quickMenuLibraryIconId(p.iconLibraryId);
+    const art = p && p.icon ? `<img src="${p.icon}" alt="">` : (libraryId ? quickMenuLibraryIconMarkup(libraryId, "project-library-icon") : '<span class="deflogo"></span>');
+    return `<div class="thumb-media ${libraryId && !(p && p.icon) ? "has-library-icon" : ""}">${art}</div>`;
   }
   function projIconHTML(p, cls) {
     const framed = !!(p && frameById(p.frame));
@@ -658,7 +1239,7 @@
       if (!group.length) return;
       const [pin, rest] = partitionPinned(group);
       const ordered = [...pin, ...sortList(rest, st.noteSort, (n) => n.title || "", (n) => n.updatedAt || 0)];
-      const sec = document.createElement("div"); sec.className = "chip-section";
+      const sec = document.createElement("div"); sec.className = "chip-section"; sec.dataset.noteType = t;
       const head = document.createElement("div"); head.className = "csec-head";
       head.innerHTML = `<span class="chip-section-label"><span class="csl-dot"></span>${label} <span class="csl-count">· ${group.length}</span></span>` +
         (firstSec ? `<button class="sort-btn" id="pdSort"><svg viewBox="0 0 24 24"><path d="M3 6h11M3 12h7M3 18h4M17 5v14M17 19l3-3M17 19l-3-3"/></svg><span id="pdSortLabel">${SORT_LABELS[st.noteSort] || "최신순"}</span></button>` : "");
@@ -801,6 +1382,7 @@
     for (const n of notes) { await purgeNoteFiles(n); await del("notes", n.id); }
     const removed = new Set(notes.map((n) => n.id));
     st.notes = st.notes.filter((n) => !removed.has(n.id));
+    await pruneQuickMenuReferences(true);
     if (bundle) armUndo(notes.length === 1 ? "메모를 삭제했어요" : `${notes.length}개 메모를 삭제했어요`, bundle);
   }
   async function deleteProjectsBatch(ids, options) {
@@ -812,6 +1394,7 @@
     for (const p of projects) await del("projects", p.id);
     st.notes = st.notes.filter((n) => !pids.has(n.projectId));
     st.projects = st.projects.filter((p) => !pids.has(p.id));
+    await pruneQuickMenuReferences(true);
     if (pids.has(st.curProjectId)) st.curProjectId = null;
     if (bundle) armUndo(projects.length === 1 ? "프로젝트를 삭제했어요" : `${projects.length}개 프로젝트를 삭제했어요`, bundle);
   }
@@ -948,6 +1531,7 @@
   async function moveNote(id, targetPid) {
     const n = getNote(id); if (!n) return;
     n.projectId = targetPid; await saveNote(n);
+    renderQuickMenu();
     toast("이동했어요");
   }
 
@@ -1368,8 +1952,18 @@
     const drawSaved = () => {
       const host = node("Saved"); if (!host) return;
       const saved = getSavedColors();
-      host.innerHTML = saved.length ? `<div class="ce-swatches">${saved.map((color) => `<button type="button" class="ce-sw" data-${prefix}-saved="${color}" style="background:${color}" aria-label="${color}" title="${color}"></button>`).join("")}</div>` : '<div class="ce-saved-empty">저장된 색이 없어요. 색을 고르고 “저장”을 눌러보세요.</div>';
-      host.querySelectorAll(`[data-${prefix}-saved]`).forEach((button) => button.addEventListener("click", () => setCurrent(button.getAttribute(`data-${prefix}-saved`))));
+      host.innerHTML = saved.length ? `<div class="ce-swatches">${saved.map((color) => `<button type="button" class="ce-sw ce-saved-sw" data-${prefix}-saved="${color}" style="background:${color}" aria-label="${color}" title="${color} · 길게 눌러 삭제"></button>`).join("")}</div>` : '<div class="ce-saved-empty">저장된 색이 없어요. 색을 고르고 “저장”을 눌러보세요.</div>';
+      host.querySelectorAll(`[data-${prefix}-saved]`).forEach((button) => {
+        const color=button.getAttribute(`data-${prefix}-saved`), remove=()=>confirmModal("저장 색상 삭제", `${String(color||"").toUpperCase()} 색상을 내 색상에서 삭제할까요?`, "삭제", true, ()=>{
+          setSavedColors(getSavedColors().filter((value)=>value!==color)); drawSaved(); toast("저장한 색상을 삭제했어요");
+        });
+        let timer=null, moved=false, held=false;
+        const clear=()=>{ if(timer){clearTimeout(timer);timer=null;} };
+        button.addEventListener("pointerdown",(event)=>{ if(event.button!=null&&event.button!==0)return; moved=false; held=false; clear(); timer=setTimeout(()=>{if(!moved){held=true;navigator.vibrate&&navigator.vibrate(12);remove();}},520); });
+        button.addEventListener("pointermove",()=>{moved=true;clear();});
+        button.addEventListener("pointerup",clear); button.addEventListener("pointercancel",clear); button.addEventListener("contextmenu",(event)=>{event.preventDefault();clear();held=true;remove();});
+        button.addEventListener("click",(event)=>{ if(held){event.preventDefault();event.stopPropagation();held=false;return;} setCurrent(color); });
+      });
     };
     const save = node("Save");
     if (save) save.addEventListener("click", () => { const colors = getSavedColors().filter((color) => color !== current); colors.unshift(current); setSavedColors(colors); drawSaved(); if (typeof opts.onSave === "function") opts.onSave(current); else toast("색을 저장했어요"); });
@@ -2226,16 +2820,52 @@
     const list = allLogTemplates(n), id = n && n.data && n.data.templateId;
     return list.find((template) => template.id === id) || list[0] || normalizeLogTemplate({ kind: "lumink-log-template", schemaVersion: 1, id: "system-fallback", name: "기본", styles: {}, rules: [], persona: {} });
   }
+  const LOG_NAME_SET_COUNT = 5;
+  const LOG_NAME_SET_LIMIT = 20;
+  function normalizeLogNameSet(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const sourceNames = Array.isArray(src.names) ? src.names : (Array.isArray(src.personaNames) ? src.personaNames : []);
+    const names = [...new Set(sourceNames.map((name) => cleanImportedText(String(name || ""), 80).trim()).filter(Boolean))].slice(0, LOG_NAME_SET_LIMIT);
+    const replacement = cleanImportedText(src.replacement != null ? src.replacement : src.alias, 80).trim();
+    return { names, replacement };
+  }
+  function normalizeLogNameSets(rawSets, legacyNames, legacyAlias) {
+    const source = Array.isArray(rawSets) ? rawSets : [];
+    const out = Array.from({ length: LOG_NAME_SET_COUNT }, (_, index) => normalizeLogNameSet(source[index]));
+    const hasConfiguredSet = out.some((set) => set.names.length || set.replacement);
+    if (!hasConfiguredSet) {
+      out[0] = normalizeLogNameSet({ names: legacyNames, replacement: legacyAlias });
+    }
+    // 원본 이름은 다섯 세트 전체에서 한 번만 쓸 수 있습니다.
+    // 과거 데이터에 중복이 있다면 낮은 번호 세트(1 → 5)를 우선 보존해
+    // 기존 로그의 표시 결과가 예측 가능하도록 안전 이전합니다.
+    const used = new Set();
+    return out.map((set) => {
+      const names = [];
+      (set.names || []).forEach((name) => {
+        const key = logNameLookup(name);
+        if (!key || used.has(key)) return;
+        used.add(key); names.push(String(name || "").trim());
+      });
+      return { names, replacement: set.replacement || "" };
+    });
+  }
+  function logNameSetCount(sets) {
+    return normalizeLogNameSets(sets).reduce((count, set) => count + set.names.length, 0);
+  }
   function normalizeLogData(raw) {
     const src = raw && typeof raw === "object" ? raw : {};
     let snapshot = null;
     if (src.templateSnapshot) { try { snapshot = normalizeLogTemplate(src.templateSnapshot); } catch (e) {} }
     const rawNames = Array.isArray(src.personaNames) ? src.personaNames : (src.personaName ? [src.personaName] : []);
-    const personaNames = [...new Set(rawNames.map((name) => cleanImportedText(String(name), 80).trim()).filter(Boolean))].slice(0, 20);
+    const nameSets = normalizeLogNameSets(src.nameSets, rawNames, src.personaAlias);
     return {
       content: cleanImportedText(src.content, 500000),
       templateId: cleanImportedText(src.templateId, 80) || "system-ink-frame",
-      personaNames, personaAlias: cleanImportedText(src.personaAlias, 80),
+      nameSets,
+      // v65.9 이하 백업 및 외부 HTML 불러오기 호환 필드. 첫 세트와 항상 동기화합니다.
+      personaNames: nameSets[0].names.slice(),
+      personaAlias: nameSets[0].replacement,
       templateSnapshot: snapshot
     };
   }
@@ -2284,10 +2914,14 @@
     });
     return out;
   }
-  function applyLogPersonaNames(segments, template, data) {
-    const alias = (data.personaAlias || template.persona.maskText || "•••").trim();
-    [...(data.personaNames || [])].sort((a, b) => String(b).length - String(a).length).forEach((name) => {
-      segments = applyPersonaMask(segments, String(name || "").trim(), alias, template.persona.style);
+  function applyLogNameSets(segments, template, data) {
+    const fallback = (template.persona.maskText || "•••").trim();
+    normalizeLogNameSets(data && data.nameSets, data && data.personaNames, data && data.personaAlias).forEach((set) => {
+      const replacement = (set.replacement || fallback).trim();
+      if (!set.names.length || !replacement) return;
+      [...set.names].sort((a, b) => String(b).length - String(a).length).forEach((name) => {
+        segments = applyPersonaMask(segments, String(name || "").trim(), replacement, template.persona.style);
+      });
     });
     return segments;
   }
@@ -2298,12 +2932,12 @@
     }).join("");
   }
   function renderLogMaskedText(text, template, data) {
-    return renderLogSegments(applyLogPersonaNames([{ text: String(text || ""), style: {} }], template, data));
+    return renderLogSegments(applyLogNameSets([{ text: String(text || ""), style: {} }], template, data));
   }
   function renderLogLine(text, template, data) {
     let segments = [{ text: String(text || ""), style: {} }];
     template.rules.forEach((rule) => { segments = applyLogRule(segments, rule); });
-    return renderLogSegments(applyLogPersonaNames(segments, template, data));
+    return renderLogSegments(applyLogNameSets(segments, template, data));
   }
   function renderLogInlineHtml(n) {
     const data = normalizeLogData(n && n.data), template = getLogTemplate(n), styles = template.styles;
@@ -2328,26 +2962,99 @@
     if (!(n.data && n.data.content || "").trim()) { preview.innerHTML = '<div class="log-preview-empty">원본 텍스트를 입력하면 여기에 디자인이 적용됩니다.</div>'; return; }
     preview.innerHTML = renderLogInlineHtml(n);
   }
-  function currentLogMaskNames(includeEmpty) {
-    const names = [...document.querySelectorAll("#logMaskNames .log-mask-name")].map((input) => input.value.trim());
-    return includeEmpty ? names : names.filter(Boolean);
+  function renderLogRenameSets(sets) {
+    const host = $("logRenameSets"); if (!host) return;
+    const normalized = normalizeLogNameSets(sets);
+    host.innerHTML = normalized.map((set, index) => {
+      const ready = !!(set.names.length && set.replacement);
+      const partial = !!(set.names.length && !set.replacement);
+      const state = ready ? " is-configured" : (partial ? " is-partial" : "");
+      const stateLabel = ready ? "설정됨" : (partial ? "바꿀 이름 미지정" : "비어 있음");
+      return `<button class="log-rename-set${state}" type="button" data-log-rename-set="${index}" aria-label="이름 치환 세트 ${index + 1} 편집 · ${stateLabel}" title="이름 치환 세트 ${index + 1}"><span class="log-rename-index">${String(index + 1).padStart(2, "0")}</span><span class="log-rename-label">세트</span><span class="log-rename-state" aria-hidden="true"></span></button>`;
+    }).join("");
+    host.querySelectorAll("[data-log-rename-set]").forEach((button) => button.addEventListener("click", () => openLogNameSetEditor(Number(button.dataset.logRenameSet))));
   }
-  function renderLogMaskNames(names) {
-    const values = Array.isArray(names) && names.length ? names.slice(0, 20) : [""];
-    $("logMaskNames").innerHTML = values.map((name, index) => `<div class="log-mask-name-row"><input class="m-input log-mask-name" maxlength="80" value="${esc(name)}" placeholder="가릴 원본 이름${index ? ` ${index + 1}` : ""}"><button class="log-mask-remove" type="button" data-log-mask-remove="${index}" aria-label="원본 이름 삭제"${values.length === 1 ? " hidden" : ""}>×</button></div>`).join("");
+  function logSetNamesFromModal() {
+    return [...document.querySelectorAll("#logSetNames .log-set-name")].map((input) => input.value.trim()).filter(Boolean);
   }
-  function addLogMaskName() {
-    const names = currentLogMaskNames(true); if (names.length >= 20) { toast("원본 이름은 최대 20개까지 추가할 수 있어요"); return; }
-    names.push(""); renderLogMaskNames(names); const inputs = $("logMaskNames").querySelectorAll(".log-mask-name"); inputs[inputs.length - 1].focus(); scheduleLogSave();
+  function logNameLookup(value) { return cleanImportedText(String(value || ""), 80).trim().toLocaleLowerCase(); }
+  function findLogNameSetConflicts(sets, currentIndex, names) {
+    const wanted=[...new Set((names||[]).map(logNameLookup).filter(Boolean))]; if(!wanted.length)return [];
+    const normalized=normalizeLogNameSets(sets), found=new Map();
+    normalized.forEach((set,index)=>{ if(index===currentIndex)return; (set.names||[]).forEach((name)=>{const key=logNameLookup(name); if(!key||!wanted.includes(key))return; const row=found.get(key)||{name:String(name||"").trim(),sets:[]}; if(!row.sets.includes(index+1))row.sets.push(index+1); found.set(key,row); }); });
+    return [...found.values()];
   }
-  function removeLogMaskName(index) {
-    const names = currentLogMaskNames(true); names.splice(index, 1); renderLogMaskNames(names.length ? names : [""]); scheduleLogSave();
+  function logSetConflictMarkup(conflicts) {
+    if(!conflicts.length)return "";
+    const items=conflicts.map((row)=>`<li><b>${esc(row.name)}</b><span>세트 ${row.sets.join(", ")}에 먼저 등록됨</span></li>`).join("");
+    return `<div class="log-set-conflict" id="logSetConflict" role="alert"><b>다른 세트에 이미 등록된 원본 이름입니다</b><small>원본 이름은 다섯 세트 전체에서 한 번만 사용할 수 있어요. 중복된 이름을 수정하거나 삭제한 뒤 저장해 주세요.</small><ul>${items}</ul></div>`;
+  }
+  function renderLogSetNames(names) {
+    const host = $("logSetNames"); if (!host) return;
+    const values = Array.isArray(names) && names.length ? names.slice(0, LOG_NAME_SET_LIMIT) : [""];
+    host.innerHTML = values.map((name, index) => `<div class="log-set-name-row"><input class="m-input log-set-name" maxlength="80" value="${esc(name)}" placeholder="원본 이름 ${index + 1}"><button class="log-set-name-remove" type="button" data-log-set-remove="${index}" aria-label="원본 이름 삭제"${values.length === 1 ? " hidden" : ""}>×</button></div>`).join("");
+    host.querySelectorAll("[data-log-set-remove]").forEach((button) => button.addEventListener("click", () => {
+      const namesNow = logSetNamesFromModal(); namesNow.splice(Number(button.dataset.logSetRemove), 1); renderLogSetNames(namesNow.length ? namesNow : [""]);
+      const nextHost = $("logSetNames"); if (nextHost) nextHost.dispatchEvent(new Event("input", { bubbles:true }));
+    }));
+  }
+  async function saveLogNameSet(index, draft) {
+    const n=getNote(st.curNoteId); if(!n||n.type!=="log")return false;
+    const safeIndex=Math.max(0,Math.min(LOG_NAME_SET_COUNT-1,Number(index)||0));
+    const sets=normalizeLogNameSets(n.data&&n.data.nameSets,n.data&&n.data.personaNames,n.data&&n.data.personaAlias);
+    const safeDraft=normalizeLogNameSet(draft);
+    const conflicts=findLogNameSetConflicts(sets,safeIndex,safeDraft.names);
+    if(conflicts.length){ toast("다른 세트에 등록된 원본 이름은 중복 저장할 수 없어요"); return false; }
+    sets[safeIndex]=safeDraft;
+    n.data=normalizeLogData(Object.assign({},n.data||{},{nameSets:sets}));
+    await saveLog(n,true); closeModal(); renderLogRenameSets(n.data.nameSets); if(!logEditMode)renderLogPreview(n);
+    toast(`이름 치환 세트 ${safeIndex+1}을 저장했어요`); return true;
+  }
+  function openLogNameSetEditor(index,seed) {
+    const n = getNote(st.curNoteId); if (!n || n.type !== "log") return;
+    const safeIndex = Math.max(0, Math.min(LOG_NAME_SET_COUNT - 1, Number(index) || 0));
+    const sets = normalizeLogNameSets(n.data && n.data.nameSets, n.data && n.data.personaNames, n.data && n.data.personaAlias);
+    const current = normalizeLogNameSet(seed || sets[safeIndex]);
+    openModal(`<h3>이름 치환 세트 ${safeIndex + 1}</h3><p class="m-sub">원본 이름은 최대 20개까지 묶을 수 있습니다. 이 세트의 원본 이름은 모두 아래 “바꿀 이름”으로 표시되고, 다섯 세트 모두 현재 로그 템플릿의 정규식 스타일 규칙을 함께 적용합니다. 원본 이름은 다른 세트와 중복 저장할 수 없습니다.</p><div class="m-field-label">바꿀 이름</div><input class="m-input" id="logSetReplacement" maxlength="80" value="${esc(current.replacement)}" placeholder="예: {{user}} 또는 주인공"><div class="log-set-modal-head"><span class="m-field-label">원본 이름</span><span id="logSetNameCount">${current.names.length}/${LOG_NAME_SET_LIMIT}</span></div><div class="log-set-name-list" id="logSetNames"></div><button class="m-btn log-set-add" id="logSetAdd" type="button">+ 원본 이름 추가</button><div id="logSetConflictHost"></div><div class="m-row"><button class="m-btn" id="logSetCancel">취소</button><button class="m-btn primary" id="logSetSave">세트 저장</button></div>`);
+    renderLogSetNames(current.names);
+    const updateCount = () => { const label = $("logSetNameCount"); if (label) label.textContent = `${logSetNamesFromModal().length}/${LOG_NAME_SET_LIMIT}`; };
+    const updateConflict = () => {
+      const host = $("logSetConflictHost"); const saveButton = $("logSetSave"); if (!host || !saveButton) return [];
+      const conflicts = findLogNameSetConflicts(sets, safeIndex, logSetNamesFromModal());
+      host.innerHTML = logSetConflictMarkup(conflicts);
+      saveButton.disabled = !!conflicts.length;
+      saveButton.textContent = conflicts.length ? "중복 이름 수정 필요" : "세트 저장";
+      saveButton.title = conflicts.length ? "다른 세트와 겹치는 원본 이름을 수정해 주세요" : "";
+      return conflicts;
+    };
+    $("logSetNames").addEventListener("input",()=>{ updateCount(); updateConflict(); });
+    updateConflict();
+    $("logSetAdd").addEventListener("click", () => {
+      const names = logSetNamesFromModal();
+      if (names.length >= LOG_NAME_SET_LIMIT) { toast(`원본 이름은 최대 ${LOG_NAME_SET_LIMIT}개까지 추가할 수 있어요`); return; }
+      names.push(""); renderLogSetNames(names); updateCount(); updateConflict();
+      const inputs = $("logSetNames").querySelectorAll(".log-set-name"); if (inputs.length) inputs[inputs.length - 1].focus();
+    });
+    $("logSetCancel").addEventListener("click",closeModal);
+    $("logSetSave").addEventListener("click", async () => {
+      const replacement = $("logSetReplacement").value.trim();
+      const names = logSetNamesFromModal();
+      const conflicts = updateConflict();
+      if (conflicts.length) {
+        toast("다른 세트에 등록된 원본 이름은 중복 저장할 수 없어요");
+        const first = $("logSetNames").querySelector(".log-set-name"); if (first) first.focus();
+        return;
+      }
+      if (names.length && !replacement) { toast("바꿀 이름을 입력해 주세요"); $("logSetReplacement").focus(); return; }
+      await saveLogNameSet(safeIndex,{names,replacement});
+    });
+    setTimeout(() => $("logSetReplacement").focus(), 80);
   }
   function renderLog() {
     const n = getNote(st.curNoteId); if (!n || n.type !== "log") { back(); return; }
     n.data = normalizeLogData(n.data); const template = getLogTemplate(n);
     $("logTitle").textContent = n.title || "로그"; $("logEdit").value = n.data.content;
-    renderLogMaskNames(n.data.personaNames); $("logMaskAlias").value = n.data.personaAlias;
+    renderLogRenameSets(n.data.nameSets);
     $("logTemplateName").textContent = template.name; $("logTemplateDesc").textContent = template.description || template.author || "로그 디자인";
     $("logEditView").hidden = !logEditMode; $("logPreviewView").hidden = logEditMode;
     $("logModeLabel").textContent = logEditMode ? "원본 텍스트 편집 중" : "정규식 디자인 보기 중";
@@ -2372,9 +3079,23 @@
     await saveLog(n); clearDraftIfSynced(n, "log", n.data);
   }
   async function toggleLogView() { await flushLog(); logEditMode = !logEditMode; renderLog(); }
+  let logPreviewEditSwitching = false;
+  let logPreviewLastTapAt = 0;
+  async function enterLogEditFromPreview() {
+    if (logEditMode || logPreviewEditSwitching) return;
+    logPreviewEditSwitching = true;
+    try {
+      await toggleLogView();
+      setTimeout(() => { const editor = $("logEdit"); if (editor) editor.focus(); }, 40);
+    } finally {
+      setTimeout(() => { logPreviewEditSwitching = false; }, 180);
+    }
+  }
   async function applyLogMask() {
     await flushLog(); const n = getNote(st.curNoteId); if (!n) return;
-    logEditMode = false; renderLog(); toast(n.data.personaNames.length ? `${n.data.personaNames.length}개 이름을 보기에서 가렸어요` : "가릴 이름을 비웠어요");
+    logEditMode = false; renderLog();
+    const count = logNameSetCount(n.data.nameSets);
+    toast(count ? `${count}개 원본 이름을 세트 규칙으로 바꿔 표시했어요` : "이름 바꾸기 세트가 비어 있어요");
   }
   async function selectLogTemplate(template) {
     const n = getNote(st.curNoteId); if (!n || n.type !== "log") return;
@@ -3601,7 +4322,10 @@
 
   /* ---------- modal ---------- */
   function openModal(html) { const box = $("modalBox"), scrim = $("modalScrim"); box.className = "modal"; box.innerHTML = html; scrim.classList.remove("log-template-open"); scrim.classList.add("open"); }
-  function closeModal() { $("modalScrim").classList.remove("open"); }
+  function closeModal() {
+    if (customThemePreviewRestore) { const restore = customThemePreviewRestore; customThemePreviewRestore = null; try { restore(); } catch (e) {} }
+    $("modalScrim").classList.remove("open");
+  }
   $on("modalScrim", "click", (e) => { if (e.target === $("modalScrim")) closeModal(); });
 
   function newNoteScreen(type) {
@@ -3779,6 +4503,53 @@
     $on("cfNo", "click", closeModal);
     $on("cfYes", "click", () => { closeModal(); onOk(); });
   }
+  /* ---------- attachments ---------- */
+  /* ---------- top bar title quick rename ---------- */
+  let topTitleRenameCooldown = 0;
+  const TOP_TITLE_IDS = ["edTitle", "readTitle", "htmlTitle", "loreTitle", "logTitle", "perTitle", "charTitle", "ideaTitle"];
+  function titleKindLabel(n) {
+    if (!n) return "메모";
+    return ({ free:"메모", html:"HTML 작업실", lorebook:"로어북", log:"로그", persona:"페르소나", character:"캐릭터", idea:"아이디어 보드" })[n.type] || "메모";
+  }
+  async function saveTopTitleRename(n, value) {
+    const next = cleanImportedText(value, 80).trim(); if (!n || !next) return;
+    n.title = next; n.titleLocked = true;
+    if (n.type === "lorebook") await saveLore(n, true);
+    else if (n.type === "log") await saveLog(n, true);
+    else if (n.type === "persona") await savePersona(n, true);
+    else if (n.type === "character") await saveCharacter(n, true);
+    else await saveNote(n);
+    TOP_TITLE_IDS.forEach((id) => { const el = $(id); if (el) el.textContent = next; });
+    renderSidebar();
+    toast("제목을 고정했어요");
+  }
+  function openTopTitleRename() {
+    const nowAt = Date.now();
+    if (nowAt < topTitleRenameCooldown || $("modalScrim").classList.contains("open")) return;
+    const n = getNote(st.curNoteId); if (!n) return;
+    topTitleRenameCooldown = nowAt + 420;
+    renameModal(`${titleKindLabel(n)} 이름`, n.title || titleKindLabel(n), (value) => { void saveTopTitleRename(n, value); });
+  }
+  function bindTopTitleRename(id) {
+    const el = $(id); if (!el) return;
+    let lastTouch = 0, lastX = 0, lastY = 0, pointerHandledUntil = 0;
+    el.classList.add("title-quick-rename");
+    el.title = "더블클릭 또는 더블터치하여 이름 바꾸기";
+    el.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      if (Date.now() < pointerHandledUntil) return;
+      openTopTitleRename();
+    });
+    el.addEventListener("pointerup", (event) => {
+      if (event.pointerType === "mouse") return;
+      const at = Date.now(), dx = Math.abs(event.clientX - lastX), dy = Math.abs(event.clientY - lastY);
+      if (lastTouch && at - lastTouch < 340 && dx < 28 && dy < 28) {
+        pointerHandledUntil = at + 520; lastTouch = 0; event.preventDefault(); openTopTitleRename(); return;
+      }
+      lastTouch = at; lastX = event.clientX; lastY = event.clientY;
+    });
+  }
+
   function renameModal(title, current, onOk) {
     openModal(`<h3>${esc(title)}</h3><input class="m-input" id="rnInput" maxlength="80" value="${esc(current)}"><div class="m-row"><button class="m-btn" id="rnNo">취소</button><button class="m-btn primary" id="rnOk">저장</button></div>`);
     setTimeout(() => { const i = $("rnInput"); i.focus(); i.select(); }, 120);
@@ -3865,19 +4636,30 @@
 
   /* ---------- icon picker ---------- */
   let iconTargetPid = null;
-  function showIconPicker(pid) {
+  function showIconPicker(pid, tab, category) {
     const p = getProject(pid); if (!p) return;
-    const grid = ICONS.map((ic) => `<div class="icon-opt${p.icon === ic.data ? " sel" : ""}" data-icon="${ic.id}"><img src="${ic.data}" alt="${esc(ic.name)}"></div>`).join("");
-    openModal(`
-      <h3>프로젝트 썸네일</h3><p class="m-sub">${esc(p.name)}</p>
-      <div class="icon-grid">${grid}
-        <div class="icon-opt upload" id="iconUpload"><svg viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 16v3h14v-3"/></svg><span>업로드</span></div>
-      </div>
-      <div class="m-row"><button class="m-btn" id="iconClose">닫기</button></div>
-    `);
+    const activeTab = tab === "library" ? "library" : "images";
+    const activeCat = QUICK_MENU_ICON_CATEGORIES.some((row) => row[0] === category) ? category : "all";
+    const tabBar = `<div class="project-icon-tabs"><button type="button" class="project-icon-tab ${activeTab === "images" ? "is-active" : ""}" data-project-icon-tab="images">기본 이미지</button><button type="button" class="project-icon-tab ${activeTab === "library" ? "is-active" : ""}" data-project-icon-tab="library">아이콘 <span>${QUICK_MENU_ICON_LIBRARY.length}</span></button></div>`;
+    let content = "";
+    if (activeTab === "images") {
+      const grid = ICONS.map((ic) => `<div class="icon-opt${!p.iconLibraryId && p.icon === ic.data ? " sel" : ""}" data-icon="${ic.id}"><img src="${ic.data}" alt="${esc(ic.name)}"></div>`).join("");
+      content = `<div class="icon-grid">${grid}<div class="icon-opt upload" id="iconUpload"><svg viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 16v3h14v-3"/></svg><span>업로드</span></div></div>`;
+    } else {
+      const cats = QUICK_MENU_ICON_CATEGORIES.map(([key, label]) => `<button type="button" class="project-icon-cat ${key === activeCat ? "is-active" : ""}" data-project-icon-cat="${key}">${label}</button>`).join("");
+      const items = QUICK_MENU_ICON_LIBRARY.filter((item) => activeCat === "all" || item.category === activeCat);
+      content = `<div class="project-icon-cats">${cats}</div><div class="project-icon-library-grid">${items.map((item) => quickMenuIconCardMarkup(item, p.iconLibraryId === item.id && !p.icon, "project")).join("")}</div>`;
+    }
+    openModal(`<h3>프로젝트 썸네일</h3><p class="m-sub">${esc(p.name)} · 기본 이미지와 루미잉크 아이콘 중에서 선택할 수 있어요.</p>${tabBar}${content}<div class="m-row"><button class="m-btn" id="iconClose">닫기</button></div>`);
+    $("modalBox").querySelectorAll("[data-project-icon-tab]").forEach((el) => el.addEventListener("click", () => showIconPicker(pid, el.dataset.projectIconTab, activeCat)));
+    $("modalBox").querySelectorAll("[data-project-icon-cat]").forEach((el) => el.addEventListener("click", () => showIconPicker(pid, "library", el.dataset.projectIconCat)));
     $("modalBox").querySelectorAll(".icon-opt[data-icon]").forEach((el) => el.addEventListener("click", async () => {
       const ic = ICONS.find((x) => x.id === el.dataset.icon); if (!ic) return;
-      p.icon = ic.data; await saveProject(p); closeModal(); render(); renderSidebar(); toast("썸네일을 변경했어요");
+      p.icon = ic.data; p.iconLibraryId = null; await saveProject(p); closeModal(); render(); renderSidebar(); toast("기본 이미지 썸네일을 적용했어요");
+    }));
+    $("modalBox").querySelectorAll("[data-project-library-icon]").forEach((el) => el.addEventListener("click", async () => {
+      const id = quickMenuLibraryIconId(el.dataset.projectLibraryIcon); if (!id) return;
+      p.icon = null; p.iconLibraryId = id; await saveProject(p); closeModal(); render(); renderSidebar(); toast("아이콘 썸네일을 적용했어요");
     }));
     $on("iconUpload", "click", () => { iconTargetPid = pid; $("iconInput").click(); });
     $on("iconClose", "click", closeModal);
@@ -3988,7 +4770,7 @@
     if (!f || !iconTargetPid) return;
     const pid = iconTargetPid;
     startCrop(f, 1, 512, 512, async (data) => {
-      const p = getProject(pid); if (p) { p.icon = data; await saveProject(p); closeModal(); render(); renderSidebar(); toast("썸네일을 변경했어요"); }
+      const p = getProject(pid); if (p) { p.icon = data; p.iconLibraryId = null; await saveProject(p); closeModal(); render(); renderSidebar(); toast("썸네일을 변경했어요"); }
     });
   });
 
@@ -4063,7 +4845,7 @@
     $("setThemeVal").textContent = st.theme === "light" ? "밝게" : "어둡게";
     $("setFontSub").textContent = (st.userFont && st.userFont.name) ? st.userFont.name : "기본 폰트";
     document.querySelectorAll("#fontSizeSeg button").forEach((b) => b.classList.toggle("on", b.dataset.fs === (st.fontScale || "normal")));
-    const av = $("setAccentVal"); if (av && ACCENTS[st.accent || "blue"]) av.innerHTML = `<span class="accent-dot"></span>${ACCENTS[st.accent || "blue"].name}`;
+    const av = $("setAccentVal"); if (av) av.innerHTML = `<span class="accent-dot"></span>${themeDisplayName()}`;
     const toolbar = $("setToolbarModeVal"); if (toolbar) toolbar.textContent = st.formatbarMode === "folded" ? "접어두기" : "항상 표시";
     const backupLimit = getAutoBackupLimit(), backupSub = $("setAutoBackupSub"), backupVal = $("setAutoBackupVal");
     if (backupSub) backupSub.textContent = `저장할 때마다 최근 ${backupLimit}개 스냅샷 보관`;
@@ -4114,12 +4896,12 @@
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
   function clearStore(name) { return new Promise((res, rej) => { const r = store(name, "readwrite").clear(); r.onsuccess = () => res(); r.onerror = () => rej(r.error); }); }
-  async function reloadState() { st.projects = await getAll("projects"); st.notes = await getAll("notes"); }
+  async function reloadState() { st.projects = await getAll("projects"); st.notes = await getAll("notes"); await loadQuickMenuSetting(); }
   async function exportBackup() {
     try {
       const files = await getAll("files"); const fileRecs = [];
       for (const f of files) { try { fileRecs.push({ id: f.id, noteId: f.noteId, name: f.name, type: f.type, size: f.size, createdAt: f.createdAt, data: await blobToBase64(f.blob) }); } catch (e) {} }
-      const payload = { app: "lumink", version: 1, exportedAt: now(), projects: st.projects, notes: st.notes, files: fileRecs };
+      const payload = { app: "lumink", version: 3, exportedAt: now(), projects: st.projects, notes: st.notes, files: fileRecs, quickMenu: jsonCopy(quickMenuConfig()), appearance: appearanceSnapshot() };
       const json = JSON.stringify(payload).replace(/</g, "\\u003c");
       const summary = st.projects.map((p) => {
         const ns = st.notes.filter((n) => n.projectId === p.id);
@@ -4356,6 +5138,8 @@
       try {
         await doAutoBackup();
         await applyImportData(payload.projects || [], payload.notes || [], payload.files || [], false);
+        await restoreQuickMenuConfig(payload.quickMenu);
+        await restoreAppearanceConfig(payload.appearance);
         await reloadState(); render(); renderSidebar(); toast("병합 복원했어요");
       } catch (e) { toast("복원 중 오류가 났어요"); }
     }));
@@ -4363,6 +5147,8 @@
       try {
         await doAutoBackup();
         await replaceImportData(payload.projects || [], payload.notes || [], payload.files || []);
+        await restoreQuickMenuConfig(payload.quickMenu);
+        await restoreAppearanceConfig(payload.appearance);
         await reloadState(); goHome(); renderSidebar(); toast("백업 시점으로 되돌렸어요");
       } catch (e) { toast("복원 중 오류가 났어요"); }
     }));
@@ -4387,7 +5173,7 @@
       confirmModal("정말 초기화할까요?", "자동 백업을 포함해 되돌릴 수 없어요.", "전부 삭제", true, async () => {
         try {
           if (autoBkTimer) { clearTimeout(autoBkTimer); autoBkTimer = null; }
-          await clearStore("notes"); await clearStore("projects"); await clearStore("files"); await clearStore("backups");
+          await clearStore("notes"); await clearStore("projects"); await clearStore("files"); await clearStore("backups"); await clearStore("settings");
         } catch (e) {}
         location.reload();
       });
@@ -4692,7 +5478,7 @@ ${html}
 .foot{margin-top:30px;text-align:center;color:${c.muted};font-size:12px}`;
   }
   function choosePersonaExportTheme(id) {
-    const accent = ACCENTS[st.accent || "blue"] || ACCENTS.blue;
+    const accent = { name: themeDisplayName() };
     openModal(`<h3>HTML로 저장</h3><p class="m-sub">현재 컬러 테마(<b>${esc(accent.name)}</b>)를 유지한 채, 저장할 카드의 밝기만 골라요.</p><div class="m-row"><button class="m-btn" id="pxLight">밝게</button><button class="m-btn primary" id="pxDark">어둡게</button></div>`);
     $on("pxLight", "click", () => { closeModal(); exportPersonaHtml(id, "light"); });
     $on("pxDark", "click", () => { closeModal(); exportPersonaHtml(id, "dark"); });
@@ -4738,7 +5524,7 @@ ${gallery}
   }
   function chooseCharacterExportOptions(id) {
     const n = getNote(id); if (!n || !isCharacterCardType(n)) return;
-    const accent = ACCENTS[st.accent || "blue"] || ACCENTS.blue;
+    const accent = { name: themeDisplayName() };
     const title = n.type === "persona" ? (characterMode(n) === "single" ? "페르소나 HTML로 저장" : "페르소나 모음 HTML로 저장") : (characterMode(n) === "single" ? "캐릭터 HTML로 저장" : "캐릭터 모음 HTML로 저장");
     openModal(`<h3>${title}</h3><p class="m-sub">현재 컬러 테마(<b>${esc(accent.name)}</b>)를 유지한 채 밝기를 고르고, 제작용 메모 포함 여부를 정해요.</p><label class="lore-toggle-wrap" style="margin:5px 0 16px"><input type="checkbox" id="cxCreator"> 크리에이터 메모 포함</label><p class="m-sub" style="margin-top:-7px">기본값은 미포함이에요. 공유용 카드에 제작 메모가 섞이지 않도록 보호합니다.</p><div class="m-row"><button class="m-btn" id="cxLight">밝게</button><button class="m-btn primary" id="cxDark">어둡게</button></div>`);
     const run = (theme) => { const includeCreator = !!$("cxCreator").checked; closeModal(); exportCharacterHtml(id, theme, includeCreator); };
@@ -5254,7 +6040,9 @@ ${gallery}
   $on("sidebarScrim", "click", closeSidebar);
   function applyTheme(t) {
     st.theme = t; document.documentElement.setAttribute("data-theme", t);
-    document.querySelector('meta[name=theme-color]').setAttribute("content", t === "light" ? "#f3f4f8" : "#0d0f17");
+    // Custom colors are intentionally a light-mode surface layer. Accent presets,
+    // logo colors and all existing gradients stay under the normal preset system.
+    applyCustomTheme(st.customTheme, { persist: false });
     $("themeIcon").innerHTML = t === "light"
       ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>'
       : '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
@@ -5285,29 +6073,251 @@ ${gallery}
     mgold: { name: "메탈릭 골드", grad: "linear-gradient(135deg, #d4b842, #b89826)", ig: ["#e8cc5e", "#ccae3e"] },
     bw: { name: "블랙&화이트", grad: "linear-gradient(135deg, #ffffff 0%, #ffffff 50%, #141414 50%, #141414 100%)", ig: ["#9a9a9a", "#7a7a7a"] }
   };
-  function applyAccent(name) {
-    if (!ACCENTS[name]) name = "blue";
-    st.accent = name;
-    if (name === "blue") document.documentElement.removeAttribute("data-accent");
-    else document.documentElement.setAttribute("data-accent", name);
-    const ig = ACCENTS[name].ig;
-    const a = $("igA"), bb = $("igB");
-    if (a) a.setAttribute("stop-color", ig[0]);
-    if (bb) bb.setAttribute("stop-color", ig[1]);
-    try { localStorage.setItem("luminkAccent", name); } catch (e) {}
-    const v = $("setAccentVal"); if (v) v.innerHTML = `<span class="accent-dot"></span>${ACCENTS[name].name}`;
+  /* ---------- v65.7: independent two-stop custom gradient themes ---------- */
+  /*
+     Preset palette contract:
+     - v64.9's root and every preset accent block remain the source of truth.
+     - A custom theme is an independent two-colour gradient theme, not a modified preset.
+     - The same two stops drive logo, buttons, SVG icon art and the recommended structural palette.
+  */
+  const CUSTOM_THEME_SETTING_ID = "customTheme";
+  const LEGACY_CUSTOM_ACCENT = "custom";
+  const CUSTOM_THEME_COLOR_META = Object.freeze([
+    { key:"mainA",          label:"메인 색상 1 · 시작", variable:"--accent",                         fallback:"#2F6FD0", group:"main" },
+    { key:"mainB",          label:"메인 색상 2 · 끝",   variable:"--accent-2",                       fallback:"#5A73D8", group:"main" },
+    { key:"logoCore",       label:"로고 중심부",         variable:"--custom-logo-ink",                fallback:"#FFFFFF", group:"brand" },
+    { key:"sectionTitleBg", label:"작은 섹션 제목 배경", variable:"--section-title-bg",                fallback:"#EAF0FF", group:"section" },
+    { key:"sidebarFootBg",  label:"사이드바 하단 버튼 배경", variable:"--sidebar-foot-bg",              fallback:"#E8EEF9", group:"sidebar", derived:true },
+    { key:"sidebarSectionGradientStart", label:"사이드바 섹션 제목 그라데이션 1", variable:"--sidebar-section-grad-a", fallback:"#EAF0FF", group:"sidebar", derived:true },
+    { key:"sidebarCountBg", label:"사이드바 메모 개수 배경", variable:"--sidebar-count-bg",             fallback:"#EAF0FF", group:"sidebar", derived:true },
+    { key:"bg",             label:"앱 배경",             variable:"--bg",                             fallback:"#F3F4F8", group:"background" },
+    { key:"bg2",            label:"보조 배경",           variable:"--bg-2",                           fallback:"#ECEEF4", group:"background" },
+    { key:"paper",          label:"문서 바탕",           variable:"--paper",                          fallback:"#FCFCFD", group:"background" },
+    { key:"surface",        label:"카드 표면",           variable:"--surface",                        fallback:"#FFFFFF", group:"card" },
+    { key:"surface2",       label:"보조 카드",           variable:"--surface-2",                      fallback:"#F1F2F7", group:"card" },
+    { key:"surface3",       label:"눌림·보조 표면",      variable:"--surface-3",                      fallback:"#E7E9F1", group:"card" },
+    { key:"barBg",          label:"상단바",              variable:"--bar-bg",                         fallback:"#FFFFFF", group:"bar" },
+    { key:"barBg2",         label:"상단바 보조",         variable:"--bar-bg-2",                       fallback:"#F6F7FB", group:"bar" },
+    { key:"barLine",        label:"상단바 경계",         variable:"--bar-line",                       fallback:"#E1E3EC", group:"bar" },
+    { key:"topbarShadow",   label:"상단 제목바 아래 그림자", variable:"--topbar-shadow-color",          fallback:"#7690C2", group:"bar" },
+    { key:"memoCodeBg",     label:"자유 메모 코드 보기 배경", variable:"--memo-code-bg",                  fallback:"#FCFCFD", group:"memo" },
+    { key:"memoCodeIconBg", label:"자유 메모 코드 보기 아이콘 배경", variable:"--memo-code-icon-bg",       fallback:"#EAF0FF", group:"memo", derived:true },
+    { key:"memoTitle",      label:"메모 제목",           variable:"--memo-title-color",               fallback:"#283A63", group:"type" },
+    { key:"homeSectionTitle", label:"메인 화면 섹션 제목", variable:"--home-section-title-color",       fallback:"#5E6377", group:"home", derived:true },
+    { key:"homeSectionTitleBg", label:"메인 화면 섹션 제목 배경", variable:"--home-section-title-bg",   fallback:"#EAF0FF", group:"home", derived:true },
+    { key:"homeShadow",     label:"메인 화면 그림자",     variable:"--home-shadow-color",              fallback:"#7690C2", group:"home", derived:true },
+    { key:"projectCountBg", label:"프로젝트 메모 개수 배경", variable:"--project-count-bg",              fallback:"#EAF0FF", group:"home", derived:true },
+    { key:"homeSortBg",     label:"메인 화면 정렬 배경", variable:"--home-sort-bg",                     fallback:"#EAF0FF", group:"home", derived:true },
+    { key:"modalTitle",     label:"팝업 제목",           variable:"--modal-title-color",              fallback:"#283A63", group:"popup", derived:true },
+    { key:"newNoteIconBg",  label:"새 메모 팝업 아이콘 배경", variable:"--new-note-icon-bg",              fallback:"#EAF0FF", group:"popup", derived:true },
+    { key:"settingsGroupTitle", label:"설정 그룹 제목",  variable:"--settings-group-title-color",      fallback:"#5E6377", group:"settings", derived:true },
+    { key:"settingsRowTitle", label:"설정 항목 제목",    variable:"--settings-row-title-color",        fallback:"#1B1D27", group:"settings", derived:true },
+    { key:"settingsShadow", label:"설정 그림자",         variable:"--settings-shadow-color",           fallback:"#7690C2", group:"settings", derived:true },
+    { key:"settingsPressedBg", label:"설정 버튼 눌림",    variable:"--settings-pressed-bg",             fallback:"#F1F2F7", group:"settings", derived:true },
+    { key:"ink",            label:"본문 글자",           variable:"--ink",                            fallback:"#1B1D27", group:"type" },
+    { key:"muted",          label:"보조 글자",           variable:"--muted",                          fallback:"#5E6377", group:"type" },
+    { key:"faint",          label:"희미한 글자",         variable:"--faint",                          fallback:"#A3A8BA", group:"type" },
+    { key:"line",           label:"기본 경계선",         variable:"--line",                           fallback:"#E1E3EC", group:"line" },
+    { key:"lineSoft",       label:"옅은 경계선",         variable:"--line-soft",                      fallback:"#EBEDF3", group:"line" }
+  ]);
+  const CUSTOM_THEME_GROUPS = Object.freeze([
+    ["main", "메인 그라데이션"], ["brand", "로고"], ["section", "섹션 제목"], ["sidebar", "사이드바"], ["background", "바탕"], ["card", "카드"],
+    ["bar", "상단바"], ["memo", "자유 메모 코드"], ["home", "메인 화면"], ["popup", "팝업"], ["settings", "설정"], ["type", "글자"], ["line", "경계선"]
+  ]);
+  const CUSTOM_THEME_STYLE_VARS = Object.freeze([
+    ...CUSTOM_THEME_COLOR_META.map((item) => item.variable),
+    "--accent-deep", "--accent-soft", "--accent-ink", "--grad-blue", "--glow", "--logo-ink",
+    "--custom-main-a", "--custom-main-b", "--custom-logo-body", "--custom-logo-tip", "--custom-logo-ink", "--custom-logo-glow",
+    "--quickmenu-default-icon-bg-a", "--quickmenu-default-icon-bg-b",
+    "--custom-note-type-free", "--custom-note-type-html", "--custom-note-type-lorebook", "--custom-note-type-log", "--custom-note-type-persona", "--custom-note-type-character", "--custom-note-type-idea",
+    "--custom-note-type-free-ink", "--custom-note-type-html-ink", "--custom-note-type-lorebook-ink", "--custom-note-type-log-ink", "--custom-note-type-persona-ink", "--custom-note-type-character-ink", "--custom-note-type-idea-ink",
+    "--custom-note-divider-text", "--custom-note-divider-count"
+  ]);
+  const CUSTOM_THEME_FALLBACK_COLORS = Object.freeze(Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item) => [item.key, item.fallback])));
+  let customThemePreviewRestore = null;
+
+  function normalizeThemeHex(value, fallback) {
+    const m = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
+    return m ? `#${m[1].toUpperCase()}` : (fallback || "#F3F4F8");
   }
-  function detectAccent() { let a = "blue"; try { a = localStorage.getItem("luminkAccent") || "blue"; } catch (e) {} applyAccent(a); }
-  function openAccentPicker() {
-    const cur = st.accent || "blue";
-    const cells = Object.keys(ACCENTS).map((k) => `<div class="accent-cell${k === cur ? " sel" : ""}" data-accent="${k}"><span class="ac-sw" style="background:${ACCENTS[k].grad}"></span><span class="ac-name">${ACCENTS[k].name}</span></div>`).join("");
-    openModal(`<h3>컬러 테마</h3><p class="m-sub">앱 전체 강조색을 골라요. 밝게·어둡게 테마와 함께 적용돼요.</p><div class="accent-grid">${cells}</div><div class="m-row"><button class="m-btn" id="acClose">닫기</button></div>`);
-    $on("acClose", "click", closeModal);
-    document.querySelectorAll(".accent-cell").forEach((el) => el.addEventListener("click", () => {
-      applyAccent(el.dataset.accent);
-      document.querySelectorAll(".accent-cell").forEach((x) => x.classList.toggle("sel", x === el));
-    }));
+  function cloneThemeObject(value) { return JSON.parse(JSON.stringify(value)); }
+  function validAccentName(value) { return ACCENTS[value] ? value : "blue"; }
+  function setOrRemoveAttr(node, name, value) { if (value == null || value === "") node.removeAttribute(name); else node.setAttribute(name, value); }
+  function rgbFromHex(hex) { const h = normalizeThemeHex(hex, "#7B9BFF").slice(1); return { r:parseInt(h.slice(0,2),16), g:parseInt(h.slice(2,4),16), b:parseInt(h.slice(4,6),16) }; }
+  function colorDistance(a,b) { const x=rgbFromHex(a), y=rgbFromHex(b); return Math.pow(x.r-y.r,2)+Math.pow(x.g-y.g,2)+Math.pow(x.b-y.b,2); }
+  function clampThemeNumber(value,min,max){ return Math.min(max,Math.max(min,Number(value)||0)); }
+  function hexToHsl(hex){ const {r,g,b}=rgbFromHex(hex); const rr=r/255,gg=g/255,bb=b/255,max=Math.max(rr,gg,bb),min=Math.min(rr,gg,bb); let h=0,sat=0,l=(max+min)/2; if(max!==min){const d=max-min; sat=l>.5?d/(2-max-min):d/(max+min); if(max===rr)h=(gg-bb)/d+(gg<bb?6:0); else if(max===gg)h=(bb-rr)/d+2; else h=(rr-gg)/d+4; h*=60;} return {h,s:sat,l}; }
+  function hslToHex(h,s,l){ const hue=((h%360)+360)%360/360; const sat=clampThemeNumber(s,0,1), light=clampThemeNumber(l,0,1); if(sat===0){const v=Math.round(light*255).toString(16).padStart(2,"0");return `#${v}${v}${v}`.toUpperCase();} const q=light<.5?light*(1+sat):light+sat-light*sat,p=2*light-q; const f=(t)=>{let x=t;if(x<0)x+=1;if(x>1)x-=1;const c=x<1/6?p+(q-p)*6*x:x<1/2?q:x<2/3?p+(q-p)*(2/3-x)*6:p;return Math.round(c*255).toString(16).padStart(2,"0");}; return `#${f(hue+1/3)}${f(hue)}${f(hue-1/3)}`.toUpperCase(); }
+  function themeHexAlpha(hex,alpha){ const {r,g,b}=rgbFromHex(hex); return `rgba(${r},${g},${b},${clampThemeNumber(alpha,0,1)})`; }
+  function lerpHue(a,b,t){ const delta=((b-a+540)%360)-180; return (a+delta*clampThemeNumber(t,0,1)+360)%360; }
+  function blendHsl(a,b,t){ const x=hexToHsl(a),y=hexToHsl(b),p=clampThemeNumber(t,0,1); return { h:lerpHue(x.h,y.h,p), s:x.s+(y.s-x.s)*p, l:x.l+(y.l-x.l)*p }; }
+  function gradientMate(hex){ const h=hexToHsl(hex); return hslToHex(h.h+22,Math.max(.40,Math.min(.84,h.s*.92+.06)),Math.max(.38,Math.min(.70,h.l+.06))); }
+  function contrastInk(hex, darkMode){ const h=hexToHsl(hex); if(darkMode) return hslToHex(h.h,Math.max(.14,h.s*.30),.92); return h.l < .62 ? "#FFFFFF" : hslToHex(h.h,Math.max(.22,h.s*.54),.22); }
+  function recommendCustomPalette(mainA,mainB,mode){
+    // 메인 두 색만으로 전체 구조 팔레트를 추천합니다.
+    // 원칙: ① 색조(hue)는 두 색의 중간값 하나로 고정해 어떤 조합에서도 색이 튀지 않게 하고,
+    //       ② 역할이 같은 배경/그림자/제목은 같은 값으로 묶어 일관된 결과(=평타)를 보장합니다.
+    const start=normalizeThemeHex(mainA,"#2F6FD0"), end=normalizeThemeHex(mainB,gradientMate(start));
+    const mid=blendHsl(start,end,.5), dark=mode==="dark";
+    const H=mid.h;
+    const S=Math.max(.30,Math.min(.90,mid.s)); // 채도: 하한으로 칙칙함 방지, 상한으로 과채도 방지
+    const L=(sat,light)=>hslToHex(H,Math.max(0,Math.min(1,sat)),Math.max(0,Math.min(1,light)));
+    const out={mainA:start,mainB:end,logoCore:contrastInk(start,dark)};
+    if(!dark){
+      const tint=L(S*.40,.930), tintHi=L(S*.30,.955);       // 통합 틴트 배경
+      const shadow=L(Math.max(.30,S*.42),.52);              // 통합 그림자
+      const titleInk=L(Math.max(.30,S*.46),.235);           // 통합 진한 제목
+      const inkC=L(Math.max(.28,S*.42),.180);
+      const mutedC=L(Math.max(.16,S*.26),.420);
+      const faintC=L(Math.max(.12,S*.18),.620);
+      const lineC=L(S*.20,.892), lineSoftC=L(S*.13,.942);
+      Object.assign(out,{
+        bg:L(S*.14,.978), bg2:L(S*.18,.953), paper:L(S*.07,.994),
+        surface:L(S*.08,.999), surface2:L(S*.14,.968), surface3:L(S*.20,.936),
+        barBg:L(S*.07,.998), barBg2:L(S*.12,.983), barLine:lineC,
+        topbarShadow:shadow, homeShadow:shadow, settingsShadow:shadow,
+        memoCodeBg:L(S*.08,.986), memoCodeIconBg:tint,
+        sectionTitleBg:tint, homeSectionTitleBg:tint, homeSortBg:tint, projectCountBg:tint,
+        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tintHi, newNoteIconBg:tint, settingsPressedBg:tintHi,
+        memoTitle:titleInk, modalTitle:titleInk, settingsRowTitle:inkC,
+        homeSectionTitle:mutedC, settingsGroupTitle:mutedC,
+        ink:inkC, muted:mutedC, faint:faintC, line:lineC, lineSoft:lineSoftC
+      });
+    } else {
+      const tint=L(S*.30,.205), tintHi=L(S*.26,.175);
+      const shadow=L(Math.max(.30,S*.42),.030);
+      const titleInk=L(Math.max(.12,S*.18),.950);
+      const inkC=L(Math.max(.11,S*.16),.930);
+      const mutedC=L(Math.max(.10,S*.14),.690);
+      const faintC=L(Math.max(.08,S*.10),.480);
+      const lineC=L(S*.22,.260), lineSoftC=L(S*.16,.195);
+      Object.assign(out,{
+        bg:L(S*.26,.075), bg2:L(S*.28,.105), paper:L(S*.20,.092),
+        surface:L(S*.24,.135), surface2:L(S*.26,.178), surface3:L(S*.27,.225),
+        barBg:L(S*.30,.145), barBg2:L(S*.32,.188), barLine:lineC,
+        topbarShadow:shadow, homeShadow:shadow, settingsShadow:shadow,
+        memoCodeBg:L(S*.20,.105), memoCodeIconBg:tint,
+        sectionTitleBg:tint, homeSectionTitleBg:tint, homeSortBg:tint, projectCountBg:tint,
+        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tintHi, newNoteIconBg:tint, settingsPressedBg:tintHi,
+        memoTitle:titleInk, modalTitle:titleInk, settingsRowTitle:inkC,
+        homeSectionTitle:mutedC, settingsGroupTitle:mutedC,
+        ink:inkC, muted:mutedC, faint:faintC, line:lineC, lineSoft:lineSoftC
+      });
+    }
+    return out;
   }
+  const CUSTOM_NOTE_TYPE_KEYS = Object.freeze(["free","html","lorebook","log","persona","character","idea"]);
+  function customThemeAutoTypeVars(mainA,mainB,dark){
+    const a=hexToHsl(mainA),b=hexToHsl(mainB),mid=blendHsl(mainA,mainB,.5);
+    const delta=Math.abs(((b.h-a.h+540)%360)-180), spread=delta<46?16:7, saturation=Math.max(.46,Math.min(.84,mid.s*.92+.06));
+    // v66.8: 기존 다크 추천 팔레트의 선명한 타입색(L .69)을 라이트 모드의 기준으로 승격합니다.
+    // 다크 표면에서는 같은 팔레트를 한 단계 밝힌 L .77로 사용해, 일곱 타입의 점·태그가 묻히지 않게 합니다.
+    // 태그 글자는 표면 모드와 무관하게 실제 배경 밝기에 맞춰 계산해 밝은 태그 위에서도 읽히게 유지합니다.
+    const typeLightness=dark?.77:.69;
+    const vars={"--custom-note-divider-text":dark?hslToHex(mid.h,Math.max(.12,mid.s*.16),.93):hslToHex(mid.h,Math.max(.22,mid.s*.42),.27),"--custom-note-divider-count":dark?hslToHex(mid.h,Math.max(.10,mid.s*.12),.61):hslToHex(mid.h,Math.max(.12,mid.s*.20),.54)};
+    CUSTOM_NOTE_TYPE_KEYS.forEach((type,index)=>{
+      const point=index/(CUSTOM_NOTE_TYPE_KEYS.length-1), hue=lerpHue(a.h,b.h,point)+(index-3)*spread;
+      const color=hslToHex(hue,Math.min(.86,saturation+(index%3)*.025),typeLightness);
+      vars[`--custom-note-type-${type}`]=color;
+      vars[`--custom-note-type-${type}-ink`]=contrastInk(color,false);
+    });
+    return vars;
+  }
+  function customThemeAccentVars(palette,mode){
+    const c=palette.colors, a=normalizeThemeHex(c.mainA,"#2F6FD0"), b=normalizeThemeHex(c.mainB,gradientMate(a));
+    const mid=blendHsl(a,b,.5),dark=mode==="dark", deep=dark?hslToHex(mid.h,Math.max(.28,mid.s*.55),.23):hslToHex(mid.h,Math.max(.34,mid.s*.58),.30);
+    const soft=dark?hslToHex(mid.h,Math.max(.18,mid.s*.28),.18):hslToHex(mid.h,Math.max(.14,mid.s*.24),.91);
+    const logoBody=a,logoTip=b,logoInk=normalizeThemeHex(c.logoCore,contrastInk(a,dark)),word=dark?hslToHex(mid.h,Math.max(.15,mid.s*.22),.88):hslToHex(mid.h,Math.max(.24,mid.s*.42),.27);
+    const quickA=dark?hslToHex(hexToHsl(a).h,Math.max(.24,hexToHsl(a).s*.54),.25):hslToHex(hexToHsl(a).h,Math.max(.16,hexToHsl(a).s*.32),.91);
+    const quickB=dark?hslToHex(hexToHsl(b).h,Math.max(.22,hexToHsl(b).s*.48),.18):hslToHex(hexToHsl(b).h,Math.max(.14,hexToHsl(b).s*.28),.965);
+    return {
+      "--accent":a,"--accent-2":b,"--accent-deep":deep,"--accent-soft":soft,"--accent-ink":c.ink,
+      "--grad-blue":`linear-gradient(135deg, ${a} 0%, ${b} 100%)`,"--glow":`0 0 ${dark?24:18}px ${themeHexAlpha(a,dark?.30:.18)}`,"--logo-ink":word,
+      "--custom-main-a":a,"--custom-main-b":b,"--custom-logo-body":logoBody,"--custom-logo-tip":logoTip,"--custom-logo-ink":logoInk,
+      "--custom-logo-glow":`drop-shadow(0 0 ${dark?13:6}px ${themeHexAlpha(a,dark?.46:.28)})`,
+      "--quickmenu-default-icon-bg-a":quickA,"--quickmenu-default-icon-bg-b":quickB,
+      ...customThemeAutoTypeVars(a,b,dark)
+    };
+  }
+  function inferLegacyBaseAccent(raw) { const src=raw&&typeof raw==="object"?raw:{}; const primary=normalizeThemeHex(src.primary||src.main||src.mainA,"#7B9BFF"), secondary=normalizeThemeHex(src.secondary||src.mainB,"#B58BFF"); let best="blue", score=Infinity; Object.entries(ACCENTS).forEach(([name,meta])=>{const s=colorDistance(primary,meta.ig[0])+colorDistance(secondary,meta.ig[1]);if(s<score){score=s;best=name;}}); return best; }
+  function withPresetComputed(accentName, mode, read) {
+    const root=document.documentElement, oldTheme=root.getAttribute("data-theme"), oldAccent=root.getAttribute("data-accent"), oldCustom=root.getAttribute("data-custom-theme");
+    const inline=new Map(CUSTOM_THEME_STYLE_VARS.map((name)=>[name,root.style.getPropertyValue(name)]));
+    try { root.removeAttribute("data-custom-theme"); CUSTOM_THEME_STYLE_VARS.forEach((name)=>root.style.removeProperty(name)); root.setAttribute("data-theme",mode); const accent=validAccentName(accentName); if(accent==="blue")root.removeAttribute("data-accent");else root.setAttribute("data-accent",accent); return read(getComputedStyle(root)); }
+    finally { setOrRemoveAttr(root,"data-theme",oldTheme); setOrRemoveAttr(root,"data-accent",oldAccent); setOrRemoveAttr(root,"data-custom-theme",oldCustom); inline.forEach((value,name)=>{if(value)root.style.setProperty(name,value);else root.style.removeProperty(name);}); }
+  }
+  function capturePresetPalette(accentName,mode){ return withPresetComputed(accentName,mode,(css)=>Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item)=>{
+    const sourceVar=({ logoCore:"--accent-ink", sectionTitleBg:"--accent-soft", sidebarFootBg:"--accent-soft", sidebarSectionGradientStart:"--accent-soft", sidebarCountBg:"--accent-soft", topbarShadow:"--accent", memoCodeBg:"--paper", memoCodeIconBg:"--accent-soft", memoTitle:"--logo-ink", homeSectionTitle:"--muted", homeSectionTitleBg:"--accent-soft", homeShadow:"--accent", projectCountBg:"--accent-soft", homeSortBg:"--accent-soft", modalTitle:"--logo-ink", newNoteIconBg:"--accent-soft", settingsGroupTitle:"--muted", settingsRowTitle:"--ink", settingsShadow:"--accent", settingsPressedBg:"--surface-2" })[item.key] || item.variable;
+    return [item.key,normalizeThemeHex((css.getPropertyValue(sourceVar)||"").trim(),item.fallback)];
+  }))) || cloneThemeObject(CUSTOM_THEME_FALLBACK_COLORS); }
+  function normalizePalette(raw,fallback,mode){
+    const src=raw&&typeof raw==="object"?raw:{}, ref=fallback||CUSTOM_THEME_FALLBACK_COLORS, out={};
+    const legacyMain=normalizeThemeHex(src.main||src.mainA,ref.mainA||"#2F6FD0");
+    out.mainA=normalizeThemeHex(src.mainA||src.main,ref.mainA||legacyMain);
+    out.mainB=normalizeThemeHex(src.mainB,ref.mainB||gradientMate(legacyMain));
+    const recommended=recommendCustomPalette(out.mainA,out.mainB,mode==="dark"?"dark":"light");
+    CUSTOM_THEME_COLOR_META.filter((item)=>item.key!=="mainA"&&item.key!=="mainB").forEach((item)=>{
+      if(item.derived){ out[item.key]=normalizeThemeHex(recommended[item.key],item.fallback); return; }
+      const missingRole=["logoCore","sectionTitleBg","sidebarFootBg","sidebarSectionGradientStart","sidebarCountBg","topbarShadow","memoCodeBg","memoCodeIconBg","memoTitle","homeSectionTitle","homeSectionTitleBg","homeShadow","projectCountBg","homeSortBg","modalTitle","newNoteIconBg","settingsGroupTitle","settingsRowTitle","settingsShadow","settingsPressedBg"].includes(item.key);
+      out[item.key]=normalizeThemeHex(src[item.key],missingRole?(recommended[item.key]||item.fallback):(ref[item.key]||item.fallback));
+    });
+    return out;
+  }
+  function normalizeCustomTheme(raw){
+    const src=raw&&typeof raw==="object"?(raw.value&&typeof raw.value==="object"?raw.value:raw):{};
+    const legacyV1=Number(src.version||1)<2&&(src.primary||src.secondary||src.accent===LEGACY_CUSTOM_ACCENT);
+    const baseAccent=validAccentName(src.baseAccent||(legacyV1?inferLegacyBaseAccent(src):"blue"));
+    const presetLight=capturePresetPalette(baseAccent,"light"),presetDark=capturePresetPalette(baseAccent,"dark");
+    const oldLight=src.light&&typeof src.light==="object"?src.light:{enabled:legacyV1?true:src.enabled===true,colors:src.colors};
+    const oldDark=src.dark&&typeof src.dark==="object"?src.dark:{enabled:false,colors:null};
+    const hasStoredPalette=!!(src.light||src.dark||src.colors||src.main||src.mainA||src.mainB||src.primary||src.secondary);
+    return {version:10,baseAccent,
+      light:{enabled:hasStoredPalette ? oldLight.enabled!==false : false,colors:normalizePalette(oldLight.colors,presetLight,"light")},
+      dark:{enabled:hasStoredPalette ? oldDark.enabled!==false : false,colors:normalizePalette(oldDark.colors,presetDark,"dark")},
+      updatedAt:Number(src.updatedAt)||0};
+  }
+  function currentCustomTheme(){ if(!st.customTheme||typeof st.customTheme!=="object")st.customTheme=normalizeCustomTheme(null); return normalizeCustomTheme(st.customTheme); }
+  function customThemeSeedFromActiveAccent(){ const activeAccent=st.accent===LEGACY_CUSTOM_ACCENT?currentCustomTheme().baseAccent:validAccentName(st.accent); const baseAccent=validAccentName(activeAccent); const lightPreset=capturePresetPalette(baseAccent,"light"),darkPreset=capturePresetPalette(baseAccent,"dark"); return {version:10,baseAccent,light:{enabled:true,colors:recommendCustomPalette(lightPreset.mainA,lightPreset.mainB,"light")},dark:{enabled:true,colors:recommendCustomPalette(darkPreset.mainA,darkPreset.mainB,"dark")},updatedAt:now()}; }
+  function customThemeStyleVars(palette,mode){ return Object.assign(Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item)=>[item.variable,palette.colors[item.key]])),customThemeAccentVars(palette,mode)); }
+  function clearCustomThemeStyles(){ const root=document.documentElement; CUSTOM_THEME_STYLE_VARS.forEach((name)=>root.style.removeProperty(name)); root.removeAttribute("data-custom-theme"); root.style.removeProperty("--custom-preview-a"); root.style.removeProperty("--custom-preview-b"); }
+  function updateThemeMetaColor(){ const meta=document.querySelector('meta[name=theme-color]');if(!meta)return;const value=(getComputedStyle(document.documentElement).getPropertyValue("--bg")||"").trim();meta.setAttribute("content",/^#[0-9a-f]{6}$/i.test(value)?value:(st.theme==="light"?"#f3f4f8":"#0d0f17")); }
+  function syncAccentGradientAndLabel(){ const css=getComputedStyle(document.documentElement),first=(css.getPropertyValue("--accent")||"#7B9BFF").trim(),second=(css.getPropertyValue("--accent-2")||"#B58BFF").trim();const a=$("igA"),bb=$("igB");if(a)a.setAttribute("stop-color",first);if(bb)bb.setAttribute("stop-color",second);const value=$("setAccentVal");if(value)value.innerHTML=`<span class="accent-dot"></span>${themeDisplayName()}`; }
+  function applyCustomTheme(config,options){ const opt=options||{},cfg=normalizeCustomTheme(config),root=document.documentElement;st.customTheme=cfg;clearCustomThemeStyles();const active=st.theme==="dark"?"dark":"light",palette=cfg[active];if(st.accent===LEGACY_CUSTOM_ACCENT){root.setAttribute("data-custom-theme",active);Object.entries(customThemeStyleVars(palette,active)).forEach(([key,value])=>root.style.setProperty(key,value));}root.style.setProperty("--custom-preview-a",cfg.light.colors.mainA);root.style.setProperty("--custom-preview-b",cfg.light.colors.mainB);if(opt.persist!==false){try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}}syncAccentGradientAndLabel();updateThemeMetaColor(); }
+  async function persistCustomTheme(config,options){ const opt=options||{},cfg=normalizeCustomTheme(Object.assign({},config,{updatedAt:now()}));cfg.light.enabled=true;cfg.dark.enabled=true;st.customTheme=cfg;try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}try{await put("settings",{id:CUSTOM_THEME_SETTING_ID,value:cfg,updatedAt:cfg.updatedAt});}catch(e){if(!opt.silent)toast("직접 지정 색상을 저장하지 못했어요");throw e;}if(opt.backup!==false)triggerAutoBackup();return cfg; }
+  async function loadCustomThemeSetting(){let stored=null;try{const row=await getOne("settings",CUSTOM_THEME_SETTING_ID);stored=row&&row.value;}catch(e){}if(!stored){try{const raw=localStorage.getItem("luminkCustomTheme");if(raw)stored=JSON.parse(raw);}catch(e){}}const cfg=normalizeCustomTheme(stored||st.customTheme||null);st.customTheme=cfg;const needsMigration=stored&&Number((stored.value||stored).version||1)<10;if(needsMigration){try{await persistCustomTheme(cfg,{backup:false,silent:true});}catch(e){}}applyCustomTheme(cfg,{persist:false});}
+  function appearanceSnapshot(){return {version:10,accent:st.accent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(st.accent),customTheme:normalizeCustomTheme(st.customTheme||null),updatedAt:now()};}
+  async function restoreAppearanceConfig(value){if(!value||typeof value!=="object")return;const cfg=normalizeCustomTheme(value.customTheme||st.customTheme||null),accent=value.accent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(value.accent||cfg.baseAccent);st.customTheme=cfg;try{await put("settings",{id:CUSTOM_THEME_SETTING_ID,value:cfg,updatedAt:cfg.updatedAt||now()});}catch(e){}try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}applyAccent(accent);applyCustomTheme(cfg,{persist:false});}
+  function themeDisplayName(){ if(st.accent===LEGACY_CUSTOM_ACCENT)return "사용자 지정"; return (ACCENTS[validAccentName(st.accent)]||ACCENTS.blue).name; }
+  function applyAccent(name){const custom=name===LEGACY_CUSTOM_ACCENT;const accent=custom?LEGACY_CUSTOM_ACCENT:validAccentName(name);st.accent=accent;if(custom||accent==="blue")document.documentElement.removeAttribute("data-accent");else document.documentElement.setAttribute("data-accent",accent);if(!custom&&st.customTheme){st.customTheme.baseAccent=accent;}try{localStorage.setItem("luminkAccent",accent);}catch(e){}applyCustomTheme(st.customTheme,{persist:false});}
+  function detectAccent(){let name=null,rawTheme=null;try{name=localStorage.getItem("luminkAccent");const raw=localStorage.getItem("luminkCustomTheme");if(raw)rawTheme=JSON.parse(raw);}catch(e){}const cfg=normalizeCustomTheme(rawTheme||null);st.customTheme=cfg;const configured=rawTheme&&!!((rawTheme.light&&rawTheme.light.enabled===true)||(rawTheme.dark&&rawTheme.dark.enabled===true));if(!name&&configured)name=LEGACY_CUSTOM_ACCENT;applyAccent(name===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(name||"blue"));}
+  function customThemePreviewPaint(box,palette){if(!box)return;const c=palette.colors;Object.entries({"--ct-bg":c.bg,"--ct-card":c.surface,"--ct-card-2":c.surface2,"--ct-ink":c.ink,"--ct-muted":c.muted,"--ct-line":c.line,"--ct-bar":c.barBg2,"--ct-main-a":c.mainA,"--ct-main-b":c.mainB}).forEach(([k,v])=>box.style.setProperty(k,v));box.classList.toggle("is-off",!palette.enabled);}
+  const CUSTOM_THEME_EXPORT_KIND = "lumink-custom-theme";
+  const CUSTOM_THEME_EXPORT_VERSION = 1;
+  function exportCustomThemeJson(config) {
+    const payload={kind:CUSTOM_THEME_EXPORT_KIND,schemaVersion:CUSTOM_THEME_EXPORT_VERSION,exportedAt:now(),customTheme:normalizeCustomTheme(config)};
+    downloadDoc(JSON.stringify(payload,null,2).replace(/</g,"\\u003c"),`lumink-custom-theme-${dateStamp()}.json`,"application/json");
+  }
+  function importCustomThemeJson(onLoad) {
+    const input=document.createElement("input"); input.type="file"; input.accept="application/json,.json"; input.style.display="none"; document.body.appendChild(input);
+    input.addEventListener("change",()=>{const file=input.files&&input.files[0]; if(!file){input.remove();return;} const reader=new FileReader(); reader.onload=()=>{try{const raw=JSON.parse(String(reader.result||"{}")); const source=raw&&typeof raw==="object"?(raw.customTheme||raw):null; if(!source||typeof source!=="object")throw new Error("invalid"); const cfg=normalizeCustomTheme(source); if(typeof onLoad==="function")onLoad(cfg); }catch(e){toast("사용자 테마 JSON 파일을 읽지 못했어요");} finally{input.remove();}}; reader.onerror=()=>{toast("사용자 테마 JSON 파일을 읽지 못했어요");input.remove();}; reader.readAsText(file,"UTF-8");});
+    input.click();
+  }
+  function openCustomThemeStudio(seed,initialMode){
+    const before=cloneThemeObject(currentCustomTheme()), beforeAccent=st.accent; let draft=seed?normalizeCustomTheme(seed):(before.light.enabled||before.dark.enabled?cloneThemeObject(before):customThemeSeedFromActiveAccent()); draft.light.enabled=true; draft.dark.enabled=true; let mode=initialMode==="dark"?"dark":"light";
+    const restore=()=>{st.customTheme=cloneThemeObject(before);applyAccent(beforeAccent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(beforeAccent));applyCustomTheme(before,{persist:false});};customThemePreviewRestore=restore;
+    const palette=draft[mode],fields=CUSTOM_THEME_GROUPS.map(([key,label])=>{const groupItems=CUSTOM_THEME_COLOR_META.filter((item)=>item.group===key&&!item.derived);if(!groupItems.length)return "";const items=groupItems.map((item)=>`<button type="button" class="custom-theme-field custom-theme-field-button${key==="main"?" is-main":""}" data-custom-editor-key="${item.key}"><span><b>${esc(item.label)}</b><small>${palette.colors[item.key]}</small></span><i style="background:${palette.colors[item.key]}"></i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.8 4.2 5 5L9 20H4v-5Z"/><path d="m12.2 6.8 5 5"/></svg></button>`).join("");return `<section class="custom-theme-group custom-theme-group-${key}"><h4>${label}</h4>${items}</section>`;}).join("");
+    const title=mode==="dark"?"다크 모드 독립 테마":"라이트 모드 독립 테마";
+    openModal(`<h3>사용자 지정 테마</h3><p class="m-sub">사용자 지정은 프리셋의 변형이 아니라, <b>두 메인 색상의 그라데이션</b>에서 시작하는 독립 테마입니다. 로고·버튼·아이콘까지 같은 두 색을 함께 사용합니다.</p><div class="custom-theme-tabs"><button class="custom-theme-tab ${mode==="light"?"is-active":""}" data-custom-tab="light">라이트 모드</button><button class="custom-theme-tab ${mode==="dark"?"is-active":""}" data-custom-tab="dark">다크 모드</button></div><div class="custom-theme-studio"><div class="custom-theme-preview" id="customThemePreview"><span class="custom-theme-preview-mark"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="m5 5 14 14M19 5 5 19" opacity=".45"/></svg></span><span class="custom-theme-preview-copy"><b>${title}</b><small id="customThemePreviewText">두 메인 색상으로 로고와 추천 팔레트를 함께 구성합니다</small></span><span class="custom-theme-swatches"><i></i><i></i></span></div><div class="custom-theme-fields">${fields}</div><div class="custom-theme-tools custom-theme-tools-stacked"><small>메인 색상 1·2를 고른 뒤 추천 팔레트를 만들면 두 색의 결을 살린 배경·카드·글자·경계선이 한 번에 채워집니다. 작은 섹션 제목 배경과 메모 제목도 이 화면에서 직접 조절할 수 있어요.</small><div><button type="button" class="custom-theme-auto primary" id="customThemeRecommend">두 메인 색상으로 추천 팔레트 만들기</button><button type="button" class="custom-theme-auto" id="customThemeReset">현재 프리셋 색상 불러오기</button></div></div><div class="custom-theme-file-actions"><button type="button" class="custom-theme-auto" id="customThemeExport">현재 세팅 JSON 저장</button><button type="button" class="custom-theme-auto" id="customThemeImport">JSON 불러오기</button></div><p class="custom-theme-note">현재 편집 중인 라이트·다크 팔레트는 JSON으로 따로 보관하거나 다시 불러올 수 있습니다.</p></div><div class="m-row"><button class="m-btn" id="customThemeCancel">취소</button><button class="m-btn primary" id="customThemeApply">적용</button></div>`);
+    const preview=()=>{customThemePreviewPaint($("customThemePreview"),draft[mode]); if(st.theme===mode){ st.customTheme=normalizeCustomTheme(draft); applyAccent(LEGACY_CUSTOM_ACCENT); }};
+    document.querySelectorAll("[data-custom-tab]").forEach((b)=>b.addEventListener("click",()=>openCustomThemeStudio(draft,b.dataset.customTab)));
+    document.querySelectorAll("[data-custom-editor-key]").forEach((b)=>b.addEventListener("click",()=>{const key=b.dataset.customEditorKey,item=CUSTOM_THEME_COLOR_META.find((x)=>x.key===key);openAdvancedColorPicker(`${item.label} 색상`,draft[mode].colors[key],(value)=>{draft[mode].colors[key]=value;openCustomThemeStudio(draft,mode);},{prefix:"customThemeRole",saved:true,save:true,intro:"정사각형 색상판·HEX·RGB·스포이드로 정확하게 조절할 수 있어요."});}));
+    $("customThemeRecommend").addEventListener("click",()=>{draft[mode].colors=recommendCustomPalette(draft[mode].colors.mainA,draft[mode].colors.mainB,mode);draft[mode].enabled=true;openCustomThemeStudio(draft,mode);});
+    $("customThemeReset").addEventListener("click",()=>{draft[mode].colors=capturePresetPalette(validAccentName(draft.baseAccent),mode);draft[mode].enabled=true;preview();openCustomThemeStudio(draft,mode);});
+    $("customThemeExport").addEventListener("click",()=>{exportCustomThemeJson(draft);toast("사용자 테마 JSON을 저장했어요");});
+    $("customThemeImport").addEventListener("click",()=>importCustomThemeJson((loaded)=>{toast("사용자 테마를 불러왔어요. 적용을 누르면 반영됩니다.");openCustomThemeStudio(loaded,mode);}));
+    $("customThemeCancel").addEventListener("click",closeModal);$("customThemeApply").addEventListener("click",async()=>{try{draft.light.enabled=true;draft.dark.enabled=true;const saved=await persistCustomTheme(draft);applyAccent(LEGACY_CUSTOM_ACCENT);applyCustomTheme(saved,{persist:false});customThemePreviewRestore=null;closeModal();renderSettings();toast("사용자 지정 테마를 적용했어요");}catch(e){}});preview();
+  }
+  function openAccentPicker(){const cur=st.accent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(st.accent||"blue"),cells=Object.keys(ACCENTS).map((key)=>`<div class="accent-cell${key===cur?" sel":""}" data-accent="${key}"><span class="ac-sw" style="background:${ACCENTS[key].grad}"></span><span class="ac-name">${ACCENTS[key].name}</span></div>`).join(""),customCfg=currentCustomTheme(),customCell=`<div class="accent-cell accent-custom${cur===LEGACY_CUSTOM_ACCENT?" sel is-custom":""}" data-custom-light="1" style="--custom-preview-a:${customCfg.light.colors.mainA};--custom-preview-b:${customCfg.light.colors.mainB}"><span class="ac-sw"></span><span class="ac-name">사용자 지정</span></div>`;openModal(`<h3>컬러 테마</h3><p class="m-sub">프리셋은 v64.9 원래 색상 결을 유지합니다. <b>사용자 지정</b>을 선택하면 프리셋 선택은 해제되고, 라이트·다크 각각의 두 색 그라데이션 독립 테마가 적용됩니다.</p><div class="accent-grid">${cells}${customCell}</div><div class="m-row"><button class="m-btn" id="acClose">닫기</button></div>`);$on("acClose","click",closeModal);document.querySelectorAll(".accent-cell[data-accent]").forEach((el)=>el.addEventListener("click",()=>{applyAccent(el.dataset.accent);document.querySelectorAll(".accent-cell").forEach((x)=>x.classList.toggle("sel",x===el));renderSettings();}));const cell=document.querySelector(".accent-cell[data-custom-light]");if(cell)cell.addEventListener("click",()=>{applyAccent(LEGACY_CUSTOM_ACCENT);closeModal();openCustomThemeStudio();});}
 
   /* ---------- font scale ---------- */
   const FS_ZOOM = { small: 0.9, normal: 1, large: 1.12 };
@@ -5337,18 +6347,9 @@ ${gallery}
     $("modalBox").querySelectorAll(".toolbar-mode").forEach((item) => item.addEventListener("click", () => { applyFormatbarMode(item.dataset.v); closeModal(); }));
     $on("tbModeClose", "click", closeModal);
   }
-  function openInstallIconPicker() {
-    const choices = [
-      ["ink", "잉크 블루", "차분한 기본 펜촉"], ["gold", "골드", "온화한 금빛 펜촉"],
-      ["violet", "바이올렛", "몽환적인 보랏빛 펜촉"], ["rose", "로즈", "부드러운 장밋빛 펜촉"],
-      ["forest", "포레스트", "짙은 숲빛 펜촉"], ["pastel-blue", "파스텔 블루", "맑고 부드러운 하늘빛"],
-      ["pastel-pink", "파스텔 핑크", "포근한 솜사탕빛"], ["pastel-green", "파스텔 그린", "산뜻한 새잎빛"],
-      ["pastel-purple", "파스텔 퍼플", "은은한 라일락빛"], ["pastel-yellow", "파스텔 옐로우", "따스한 레몬빛"]
-    ];
-    openModal(`<h3>앱 설치 아이콘</h3><p class="m-sub">아이콘을 고르면 해당 설치 전용 페이지로 이동해요. 이미 설치한 앱의 아이콘을 바꾸려면 기존 앱을 삭제한 뒤 다시 설치해 주세요.</p><div class="install-icon-grid">${choices.map(([id,name,sub]) => `<button class="install-icon-choice" data-install-icon="${id}"><img src="./icon-${id}-192.png" alt="${name}"><span><b>${name}</b><small>${sub}</small></span></button>`).join("")}</div><div class="m-row"><button class="m-btn" id="installIconClose">닫기</button></div>`);
-    $("modalBox").querySelectorAll("[data-install-icon]").forEach((button) => button.addEventListener("click", () => { window.location.href = `./install-${button.dataset.installIcon}.html`; }));
-    $on("installIconClose", "click", closeModal);
-  }
+  // 설치 아이콘 선택은 v65.8부터 간판 페이지에서 진행합니다.
+  // 컬러별 설치 페이지로 바로 점프하지 않아도 전체 소개와 색상 선택을 한 흐름으로 볼 수 있어요.
+  function openInstallIconPicker() { void openInstallStartPage(); }
 
   /* ---------- auto backup (user-selectable retention: 1–15 snapshots) ---------- */
   const AUTO_BACKUP_LIMIT_KEY = "luminkAutoBackupLimit";
@@ -5393,9 +6394,10 @@ ${gallery}
         size: f.size, createdAt: f.createdAt, blob: f.blob
       }));
       const snap = {
-        id: "bk_" + autoBkLast, version: 2, ts: autoBkLast,
+        id: "bk_" + autoBkLast, version: 3, ts: autoBkLast,
         projects: JSON.parse(JSON.stringify(st.projects)),
-        notes: JSON.parse(JSON.stringify(st.notes)), files: snapFiles
+        notes: JSON.parse(JSON.stringify(st.notes)), files: snapFiles,
+        quickMenu: jsonCopy(quickMenuConfig()), appearance: appearanceSnapshot()
       };
       await put("backups", snap);
       await pruneAutoBackups(getAutoBackupLimit());
@@ -5450,7 +6452,7 @@ ${gallery}
       document.querySelectorAll(".ab-restore").forEach((btn) => btn.addEventListener("click", () => {
         const snap = all.find((x) => x.id === btn.dataset.bk); if (!snap) return;
         const dt = new Date(snap.ts), label = `${dt.getMonth() + 1}/${dt.getDate()} ${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`;
-        openRestoreModePicker({ app: "lumink", projects: snap.projects, notes: snap.notes, files: snap.files || [] }, `${label} 자동 백업`);
+        openRestoreModePicker({ app: "lumink", projects: snap.projects, notes: snap.notes, files: snap.files || [], quickMenu: snap.quickMenu || null, appearance: snap.appearance || null }, `${label} 자동 백업`);
       }));
     }).catch(() => { toast("자동 백업 정보를 읽지 못했어요"); });
   }
@@ -5474,10 +6476,49 @@ ${gallery}
     el.addEventListener("contextmenu", (e) => { e.preventDefault(); fn(); });
   }
 
+  function bindQuickMenuInteractions() {
+    const menu = $("quickMenu");
+    if (!menu) return;
+    // 외부 영역을 누르면 항상 접습니다. 메뉴 내부의 버튼·슬롯 입력은 그대로 유지합니다.
+    document.addEventListener("pointerdown", (event) => {
+      if (!document.body.classList.contains("quick-menu-open")) return;
+      if (menu.contains(event.target)) return;
+      setQuickMenuOpen(false);
+    }, true);
+    let active = null;
+    const finish = (event) => {
+      if (!active || (event.pointerId != null && active.id !== event.pointerId)) return;
+      const dx = event.clientX - active.x, dy = event.clientY - active.y;
+      if (Math.abs(dx) > 30 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        if (dx < 0) setQuickMenuOpen(true);
+        else if (active.open) setQuickMenuOpen(false);
+      }
+      active = null;
+    };
+    document.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse") return;
+      const edgeStart = event.clientX >= window.innerWidth - 34;
+      if (menu.contains(event.target) || edgeStart) active = { id:event.pointerId, x:event.clientX, y:event.clientY, open:document.body.classList.contains("quick-menu-open") };
+    }, { passive:true });
+    document.addEventListener("pointerup", finish, { passive:true });
+    document.addEventListener("pointercancel", () => { active = null; }, { passive:true });
+  }
+
   /* ---------- bind static ---------- */
   function bind() {
     $on("homeMenu", "click", openSidebar);
     $on("homeSettings", "click", () => go({ s: "settings" }));
+    $on("quickMenuTab", "click", () => setQuickMenuOpen(!document.body.classList.contains("quick-menu-open")));
+    $on("quickMenuEdit", "click", () => { setQuickMenuOpen(false); openQuickMenuManager(); });
+    $on("quickMenuManage", "click", () => { setQuickMenuOpen(false); openQuickMenuManager(); });
+    bindQuickMenuInteractions();
+    $on("quickMenuImageInput", "change", async (event) => {
+      const file = event.target.files && event.target.files[0], index = quickMenuImageSlot; event.target.value = "";
+      if (!file || !Number.isInteger(index)) return;
+      try { const current = quickMenuConfig().slots[index]; current.thumbnail = await quickThumbnailFromFile(file); current.iconCode = null; current.libraryIconId = null; await persistQuickMenu(); openQuickMenuSlotEditor(index); }
+      catch (e) { toast((e && e.message) || "썸네일을 바꾸지 못했어요"); }
+      finally { quickMenuImageSlot = null; }
+    });
     // settings rows
     $on("setTheme", "click", () => { applyTheme(st.theme === "light" ? "dark" : "light"); renderSettings(); });
     $on("setFont", "click", showFontDialog);
@@ -5485,18 +6526,12 @@ ${gallery}
     $on("setRestore", "click", () => $("restoreInput").click());
     $on("setReset", "click", resetData);
     $on("setAutoBackup", "click", openAutoBackupList);
-    $on("setStorage", "click", () => {
-      const val = $("setStorageVal").textContent, sub = $("setStorageSub").textContent;
-      openModal(`<h3>저장공간</h3><p class="m-sub"><b>${esc(val)}</b><br>${esc(sub)}<br><br>표시 용량은 이 사이트가 브라우저에 저장한 데이터와 자동 백업을 포함해요. 이미지가 많을수록 자동 백업도 함께 커집니다.</p><div class="m-row"><button class="m-btn primary" id="storageClose">확인</button></div>`);
-      $on("storageClose", "click", closeModal);
-    });
+    $on("setStorage", "click", () => { void openQuickMenuStorageInfo(); });
     $on("setAccent", "click", openAccentPicker);
+    $on("setQuickMenu", "click", openQuickMenuSettings);
     $on("setToolbarMode", "click", openFormatbarModePicker);
     $on("setInstallIcon", "click", openInstallIconPicker);
-    $on("setManual", "click", async () => {
-      await flushPending();
-      window.location.href = "./Lumi_Ink_Manual_1.html?from=app";
-    });
+    $on("setManual", "click", () => { void openManualPage(); });
     document.querySelectorAll("#fontSizeSeg button").forEach((b) => b.addEventListener("click", () => applyFontScale(b.dataset.fs)));
     $on("restoreInput", "change", (e) => { const f = e.target.files && e.target.files[0]; if (f) restoreBackup(f); e.target.value = ""; });
     // selection bar
@@ -5510,6 +6545,7 @@ ${gallery}
     $on("homeNewProject", "click", () => showProjectForm(null, () => { render(); renderSidebar(); }));
     document.querySelectorAll(".nav-back").forEach((b) => b.addEventListener("click", back));
     document.querySelectorAll(".nav-menu").forEach((b) => b.addEventListener("click", openSidebar));
+    TOP_TITLE_IDS.forEach(bindTopTitleRename);
     $on("pdMore", "click", () => openProjectSheet(st.curProjectId));
     $on("pdSelect", "click", () => { if (notesOf(st.curProjectId).length) enterSelMode("note", null); else toast("선택할 메모가 없어요"); });
     $on("pdFab", "click", () => showTypePicker(st.curProjectId));
@@ -5573,17 +6609,23 @@ ${gallery}
     // read: double-tap to edit
     $on("readBody", "dblclick", editCurrentNote);
 
-    // global left-edge swipe -> open sidebar (any screen)
-    let edgeX = null, edgeY = null;
+    // global edge swipes: left opens navigation, right opens the compact quick menu.
+    let edgeX = null, edgeY = null, quickEdgeX = null, quickEdgeY = null, quickDragX = null, quickDragY = null;
     document.addEventListener("touchstart", (e) => {
-      if (document.body.classList.contains("sidebar-open") || document.body.classList.contains("sheet-open") || $("modalScrim").classList.contains("open")) { edgeX = null; return; }
-      const t = e.touches[0]; edgeX = t.clientX <= 24 ? t.clientX : null; edgeY = t.clientY;
+      if (document.body.classList.contains("sidebar-open") || document.body.classList.contains("sheet-open") || $("modalScrim").classList.contains("open")) { edgeX = null; quickEdgeX = null; quickDragX = null; return; }
+      const t = e.touches[0], root = $("quickMenu"), quickEnabled = quickMenuIsEnabled();
+      edgeX = t.clientX <= 24 ? t.clientX : null; edgeY = t.clientY;
+      quickEdgeX = quickEnabled && t.clientX >= window.innerWidth - 26 ? t.clientX : null; quickEdgeY = t.clientY;
+      if (quickEnabled && root && document.body.classList.contains("quick-menu-open") && e.target.closest && e.target.closest("#quickMenuPanel")) { quickDragX = t.clientX; quickDragY = t.clientY; }
     }, { passive: true });
     document.addEventListener("touchmove", (e) => {
-      if (edgeX == null) return; const t = e.touches[0];
-      if (t.clientX - edgeX > 55 && Math.abs(t.clientY - edgeY) < 45) { openSidebar(); edgeX = null; }
+      const t = e.touches[0];
+      if (edgeX != null && t.clientX - edgeX > 55 && Math.abs(t.clientY - edgeY) < 45) { openSidebar(); edgeX = null; quickEdgeX = null; }
+      if (quickEdgeX != null && quickEdgeX - t.clientX > 45 && Math.abs(t.clientY - quickEdgeY) < 48) { setQuickMenuOpen(true); quickEdgeX = null; }
+      if (quickDragX != null && t.clientX - quickDragX > 62 && Math.abs(t.clientY - quickDragY) < 48) { setQuickMenuOpen(false); quickDragX = null; }
     }, { passive: true });
-    document.addEventListener("touchend", () => { edgeX = null; });
+    document.addEventListener("touchend", () => { edgeX = null; quickEdgeX = null; quickDragX = null; });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("quick-menu-open")) setQuickMenuOpen(false); });
 
     // HTML workshop
     $on("htmlSource", "input", scheduleHtmlSave);
@@ -5743,13 +6785,24 @@ ${gallery}
     // styled log
     $on("logEdit", "input", scheduleLogSave);
     $on("logEdit", "blur", () => flushLog());
-    $("logMaskNames").addEventListener("input", (e) => { if (e.target.classList.contains("log-mask-name")) scheduleLogSave(); });
-    $("logMaskNames").addEventListener("click", (e) => { const button = e.target.closest("[data-log-mask-remove]"); if (button) removeLogMaskName(Number(button.dataset.logMaskRemove)); });
-    $on("logMaskAlias", "input", scheduleLogSave);
-    $on("logMaskAdd", "click", addLogMaskName);
-    $on("logMaskApply", "click", applyLogMask);
+    // 이름 바꾸기 세트는 각 버튼의 팝업에서 즉시 저장합니다.
     $on("logTemplateBtn", "click", showLogTemplatePicker);
     $on("logViewToggle", "click", toggleLogView);
+    $on("logPreview", "dblclick", (event) => {
+      event.preventDefault();
+      void enterLogEditFromPreview();
+    });
+    $on("logPreview", "touchend", (event) => {
+      if (logEditMode) return;
+      const stamp = Date.now();
+      if (stamp - logPreviewLastTapAt <= 340) {
+        event.preventDefault();
+        logPreviewLastTapAt = 0;
+        void enterLogEditFromPreview();
+      } else {
+        logPreviewLastTapAt = stamp;
+      }
+    }, { passive:false });
     $on("logMore", "click", () => openNoteSheet(st.curNoteId));
     $on("logTemplateInput", "change", (e) => { const file = e.target.files && e.target.files[0]; e.target.value = ""; if (file) importLogTemplateFile(file); });
 
@@ -8550,8 +9603,8 @@ ornamentLine: { label: "장식 실선", desc: "중앙 장식이 있는 구분선
     } catch (e) {}
     try { bind(); } catch (e) { console.warn("bind", e); }
     const logTemplatesLoaded = loadBundledLogTemplates();
-    try { await openDB(); st.projects = await getAll("projects"); st.notes = await getAll("notes"); }
-    catch (e) { console.warn("DB error", e); toast("저장소를 열 수 없어요"); }
+    try { await openDB(); st.projects = await getAll("projects"); st.notes = await getAll("notes"); await loadCustomThemeSetting(); await loadQuickMenuSetting(); }
+    catch (e) { console.warn("DB error", e); st.quickMenu = normalizeQuickMenu(null); toast("저장소를 열 수 없어요"); }
     try { await logTemplatesLoaded; } catch (e) { console.warn("log templates", e); }
     try { await migrate(); } catch (e) { console.warn("migrate", e); }
     history.replaceState({ d: 1 }, "");
