@@ -27,7 +27,7 @@
   ];
   const FRAME_THEME_TOKEN = "theme";
   const FRAME_PUNCH_TOKEN = "punch";
-  const HTML_SOURCE_MAX = 5 * 1024 * 1024; // raw HTML 작업실: 원본 보존용 5 MiB 상한
+  const HTML_SOURCE_MAX = 5 * 1024 * 1024; // raw 코드 작업실: 원본 보존용 5 MiB 상한
   const FRAME_COLOR_BY_KEY = new Map(FRAME_COLORS.filter(([key]) => key !== FRAME_PUNCH_TOKEN).map(([key, , color]) => [key, color.toLowerCase()]));
   const FRAME_COLOR_SET = new Set(FRAME_COLORS.filter(([key]) => key !== FRAME_PUNCH_TOKEN).map(([, , color]) => color.toLowerCase()));
   function frameById(id) { return FRAMES.find((f) => f.id === id) || null; }
@@ -86,8 +86,11 @@
 
   /* ---------- right-edge quick menu · v65.2 code icon slots ---------- */
   const QUICK_MENU_SETTING_ID = "quickMenu";
-  const QUICK_MENU_MAX = 7;
-  const QUICK_MENU_ALLOWED_TYPES = new Set(["free", "html", "lorebook", "log", "persona", "character", "idea"]);
+  const QUICK_MENU_MIN = 1;
+  const QUICK_MENU_DEFAULT = 5;
+  const QUICK_MENU_LEGACY_DEFAULT = 7;
+  const QUICK_MENU_MAX = 10;
+  const QUICK_MENU_ALLOWED_TYPES = new Set(["free", "html", "regex", "lorebook", "log", "persona", "character", "idea"]);
   const QUICK_MENU_ICON_LIBRARY = Array.isArray(window.__luminkQuickMenuIcons) ? window.__luminkQuickMenuIcons.filter((item) => item && typeof item.id === "string" && typeof item.svg === "string") : [];
   const QUICK_MENU_ICON_BY_ID = new Map(QUICK_MENU_ICON_LIBRARY.map((item) => [item.id, item]));
   const QUICK_MENU_ICON_CATEGORIES = [
@@ -171,11 +174,25 @@
   function emptyQuickMenuSlot(index) {
     return { slotId: index + 1, kind: null, label: "", thumbnail: null, iconCode: null, libraryIconId: null, functionId: null, targetId: null, createType: null, createMode: "single", createProjectId: null };
   }
+  function quickMenuSlotCount(value) {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? Math.max(QUICK_MENU_MIN, Math.min(QUICK_MENU_MAX, n)) : QUICK_MENU_DEFAULT;
+  }
+  function quickMenuHasStoredSlotCount(src) {
+    return !!(src && Object.prototype.hasOwnProperty.call(src, "slotCount") && Number.isFinite(Number(src.slotCount)));
+  }
+  function quickMenuInitialSlotCount(src, list) {
+    if (quickMenuHasStoredSlotCount(src)) return quickMenuSlotCount(src.slotCount);
+    const hasLegacyConfig = !!(src && typeof src === "object" && (Array.isArray(src.slots) || "enabled" in src || "displayMode" in src || "updatedAt" in src || "version" in src));
+    if (hasLegacyConfig) return Math.max(QUICK_MENU_LEGACY_DEFAULT, Math.min(QUICK_MENU_MAX, Array.isArray(list) ? list.length : QUICK_MENU_LEGACY_DEFAULT));
+    return QUICK_MENU_DEFAULT;
+  }
   function normalizeQuickMenu(raw) {
     const src = raw && typeof raw === "object" ? (raw.value && typeof raw.value === "object" ? raw.value : raw) : {};
     const list = Array.isArray(src.slots) ? src.slots : [];
+    const slotCount = quickMenuInitialSlotCount(src, list);
     const slots = [];
-    for (let i = 0; i < QUICK_MENU_MAX; i++) {
+    for (let i = 0; i < slotCount; i++) {
       const base = emptyQuickMenuSlot(i), item = list[i] && typeof list[i] === "object" ? list[i] : {};
       // v65.8: 기존 홈 바로가기는 기능 바로가기 안의 home 항목으로 안전하게 승격합니다.
       const kind = ["function", "project", "note", "create"].includes(item.kind) ? item.kind : (item.kind === "home" ? "function" : null);
@@ -203,6 +220,7 @@
       // v64.9: 기존 퀵 메뉴는 모두 기본형·사용 상태로 자연스럽게 승격합니다.
       enabled: src.enabled !== false,
       displayMode: src.displayMode === "mini" ? "mini" : "full",
+      slotCount,
       slots
     };
   }
@@ -210,6 +228,7 @@
     if (!st.quickMenu || !Array.isArray(st.quickMenu.slots)) st.quickMenu = normalizeQuickMenu(st.quickMenu);
     return st.quickMenu;
   }
+  function quickMenuSlotLimit(cfg) { return quickMenuSlotCount((cfg || quickMenuConfig()).slotCount); }
   function quickMenuIsEnabled() { return quickMenuConfig().enabled !== false; }
   function quickMenuDisplayModeName(cfg) { return (cfg && cfg.displayMode) === "mini" ? "미니형" : "기본형"; }
   function quickMenuFilledCount() { return quickMenuConfig().slots.filter((slot) => !!slot.kind).length; }
@@ -224,7 +243,7 @@
     const type = slot && slot.createType;
     if (type === "persona") return slot.createMode === "collection" ? "다인 페르소나" : "페르소나";
     if (type === "character") return slot.createMode === "collection" ? "다인 캐릭터" : "캐릭터";
-    return ({ free: "자유 메모", html: "HTML 작업실", lorebook: "로어북", log: "로그 저장", idea: "아이디어 보드" })[type] || "메모";
+    return ({ free: "자유 메모", html: "코드 작업실", lorebook: "로어북", log: "로그 저장", idea: "아이디어 보드" })[type] || "메모";
   }
   function quickMenuSlotLabel(slot) {
     if (!slot || !slot.kind) return "새 슬롯 등록";
@@ -343,8 +362,9 @@
     const tab = $("quickMenuTab"); if (tab) { tab.setAttribute("aria-expanded", String(on)); tab.setAttribute("aria-label", on ? "퀵 메뉴 접기" : "퀵 메뉴 펼치기"); }
   }
   function renderQuickMenu() {
-    const box = $("quickMenuSlots"), count = $("quickMenuCount"), settingSub = $("setQuickMenuSub"), settingVal = $("setQuickMenuVal"), root = $("quickMenu");
+    const box = $("quickMenuSlots"), count = $("quickMenuCount"), meta = $("quickMenuSlotMeta"), settingSub = $("setQuickMenuSub"), settingVal = $("setQuickMenuVal"), root = $("quickMenu");
     const cfg = quickMenuConfig(), enabled = cfg.enabled !== false, mini = cfg.displayMode === "mini";
+    const limit = quickMenuSlotLimit(cfg);
     if (root) {
       root.hidden = !enabled;
       root.classList.toggle("is-mini", mini);
@@ -364,8 +384,9 @@
       }
     }
     const filled = quickMenuFilledCount();
-    if (count) count.textContent = `${filled} / ${QUICK_MENU_MAX} 등록`;
-    if (settingSub) settingSub.textContent = enabled ? `오른쪽 가장자리 · ${quickMenuDisplayModeName(cfg)} · ${filled}/${QUICK_MENU_MAX} 등록` : "사용 안 함 · 퀵 메뉴 탭 숨김";
+    if (count) count.textContent = `${filled} / ${limit} 등록`;
+    if (meta) meta.textContent = `SWIPE · ${limit} SLOTS`;
+    if (settingSub) settingSub.textContent = enabled ? `오른쪽 가장자리 · ${quickMenuDisplayModeName(cfg)} · ${filled}/${limit} 등록` : "사용 안 함 · 퀵 메뉴 탭 숨김";
     if (settingVal) settingVal.textContent = enabled ? `${quickMenuDisplayModeName(cfg)} ›` : "꺼짐 ›";
   }
   async function persistQuickMenu(options) {
@@ -375,6 +396,15 @@
     if (opt.backup !== false) triggerAutoBackup();
     renderQuickMenu();
     if (typeof curView === "function" && curView().s === "settings") renderSettings();
+  }
+  async function setQuickMenuSlotCount(value) {
+    const cfg = quickMenuConfig(), next = quickMenuSlotCount(value);
+    if (quickMenuSlotLimit(cfg) === next) return;
+    const current = cfg.slots.slice(0, next);
+    while (current.length < next) current.push(emptyQuickMenuSlot(current.length));
+    cfg.slotCount = next;
+    cfg.slots = current.map((slot, index) => Object.assign(emptyQuickMenuSlot(index), slot || {}, { slotId: index + 1 }));
+    await persistQuickMenu();
   }
   async function loadQuickMenuSetting() {
     try {
@@ -413,7 +443,7 @@
     return cfg.slots[index];
   }
   async function setQuickMenuSlot(index, next, options) {
-    if (!Number.isInteger(index) || index < 0 || index >= QUICK_MENU_MAX) return;
+    if (!Number.isInteger(index) || index < 0 || index >= quickMenuSlotLimit()) return;
     replaceQuickMenuSlot(index, next);
     await persistQuickMenu(options);
   }
@@ -489,6 +519,7 @@
   }
   function openQuickMenuSettings() {
     const cfg = quickMenuConfig(), enabled = cfg.enabled !== false, mode = cfg.displayMode === "mini" ? "mini" : "full";
+    const slotCount = quickMenuSlotLimit(cfg);
     const modePreview = (kind) => kind === "mini"
       ? `<span class="qm-display-schematic mini" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>`
       : `<span class="qm-display-schematic full" aria-hidden="true"><i></i><i></i><i></i></span>`;
@@ -503,7 +534,13 @@
         <button type="button" class="qm-display-option ${mode === "full" ? "is-active" : ""}" data-qm-display-mode="full">${modePreview("full")}<span><b>기본형</b><small>아이콘 · 제목 · 설명을 함께 표시</small></span></button>
         <button type="button" class="qm-display-option ${mode === "mini" ? "is-active" : ""}" data-qm-display-mode="mini">${modePreview("mini")}<span><b>미니형</b><small>설명 없이 아이콘만 간결하게 표시</small></span></button>
       </div></div>
-      <div class="qm-settings-manage"><span><b>등록한 바로가기</b><small>${quickMenuFilledCount()} / ${QUICK_MENU_MAX} 슬롯 사용 중</small></span><button type="button" class="m-btn primary" id="qmOpenManager">슬롯 편집</button></div>
+      <div class="qm-settings-section"><div class="qm-settings-section-title">슬롯 개수</div>
+        <div class="qm-slot-count-setting">
+          <input id="qmSlotCountRange" type="range" min="${QUICK_MENU_MIN}" max="${QUICK_MENU_MAX}" step="1" value="${slotCount}" aria-label="퀵 메뉴 슬롯 개수">
+          <label><input id="qmSlotCountInput" type="number" min="${QUICK_MENU_MIN}" max="${QUICK_MENU_MAX}" step="1" value="${slotCount}" inputmode="numeric" aria-label="퀵 메뉴 슬롯 개수 직접 입력"><span>개</span></label>
+        </div>
+      </div>
+      <div class="qm-settings-manage"><span><b>등록한 바로가기</b><small>${quickMenuFilledCount()} / ${slotCount} 슬롯 사용 중</small></span><button type="button" class="m-btn primary" id="qmOpenManager">슬롯 편집</button></div>
       <div class="m-row"><button class="m-btn" id="qmSettingsClose">닫기</button></div>`);
     $on("qmToggleEnabled", "click", async () => {
       quickMenuConfig().enabled = !quickMenuIsEnabled();
@@ -517,13 +554,23 @@
       await persistQuickMenu();
       openQuickMenuSettings();
     }));
+    const syncSlotCount = (value) => {
+      const next = quickMenuSlotCount(value);
+      const range = $("qmSlotCountRange"), input = $("qmSlotCountInput");
+      if (range) range.value = String(next);
+      if (input) input.value = String(next);
+      return next;
+    };
+    $on("qmSlotCountRange", "input", (event) => syncSlotCount(event.target.value));
+    $on("qmSlotCountRange", "change", async (event) => { await setQuickMenuSlotCount(syncSlotCount(event.target.value)); openQuickMenuSettings(); });
+    $on("qmSlotCountInput", "change", async (event) => { await setQuickMenuSlotCount(syncSlotCount(event.target.value)); openQuickMenuSettings(); });
     $on("qmOpenManager", "click", openQuickMenuManager);
     $on("qmSettingsClose", "click", closeModal);
   }
 
   function openQuickMenuManager() {
-    const cfg = quickMenuConfig();
-    openModal(`<h3>퀵 메뉴 편집</h3><p class="m-sub">화면 오른쪽의 숨김 탭을 밀어 펼치면 사용할 최대 7개의 바로가기를 정해요. 등록 대상이 삭제되면 해당 슬롯은 자동으로 비워집니다.</p><div class="qm-manager-grid">${cfg.slots.map((slot, index) => quickMenuSlotMarkup(slot, index, true)).join("")}</div><div class="m-row"><button class="m-btn" id="qmManagerClose">닫기</button></div>`);
+    const cfg = quickMenuConfig(), limit = quickMenuSlotLimit(cfg);
+    openModal(`<h3>퀵 메뉴 편집</h3><p class="m-sub">화면 오른쪽의 숨김 탭을 밀어 펼치면 사용할 최대 ${limit}개의 바로가기를 정해요. 등록 대상이 삭제되면 해당 슬롯은 자동으로 비워집니다.</p><div class="qm-manager-grid">${cfg.slots.map((slot, index) => quickMenuSlotMarkup(slot, index, true)).join("")}</div><div class="m-row"><button class="m-btn" id="qmManagerClose">닫기</button></div>`);
     $("modalBox").querySelectorAll("[data-qm-manage-slot]").forEach((button) => button.addEventListener("click", () => {
       const index = Number(button.dataset.qmManageSlot), slot = quickMenuConfig().slots[index];
       if (slot && slot.kind) openQuickMenuSlotEditor(index); else openQuickMenuSlotTypePicker(index);
@@ -585,7 +632,7 @@
   }
   function openQuickMenuCreateTypePicker(index) {
     const options = [
-      ["free", "single", "자유 메모", "바로 빈 문서 열기"], ["html", "single", "HTML 작업실", "HTML 원본 작업 시작"], ["lorebook", "single", "로어북", "World Info용 항목 만들기"], ["log", "single", "로그 저장", "대화 로그용 메모 만들기"],
+      ["free", "single", "자유 메모", "바로 빈 문서 열기"], ["html", "single", "코드 작업실", "HTML · JSON · MD 원본 편집 시작"], ["regex", "single", "정규식 작업실", "SillyTavern Regex 만들기"], ["lorebook", "single", "로어북", "World Info용 항목 만들기"], ["log", "single", "로그 저장", "대화 로그용 메모 만들기"],
       ["persona", "single", "페르소나", "단일 페르소나 카드"], ["persona", "collection", "다인 페르소나", "페르소나 모음 카드"], ["character", "single", "캐릭터", "단일 캐릭터 카드"], ["character", "collection", "다인 캐릭터", "캐릭터 모음 카드"], ["idea", "single", "아이디어 보드", "자유 배치 보드 만들기"]
     ];
     openModal(`<h3>만들 메모 타입</h3><p class="m-sub">실행하면 이 타입의 새 메모를 바로 만듭니다.</p><div class="qm-picker-list">${options.map(([type, mode, label, desc]) => `<button type="button" class="qm-picker-row" data-qm-create-type="${type}" data-qm-create-mode="${mode}"><b>${esc(label)}</b><small>${esc(desc)}</small></button>`).join("")}</div><div class="m-row"><button class="m-btn" id="qmCreateTypeBack">뒤로</button></div>`);
@@ -692,6 +739,7 @@
   }
   function freeDraftFromEditor() { return { html: st.codeMode ? $("codeArea").value : $("editor").innerHTML }; }
   function htmlDraftFromEditor() { return { source: $("htmlSource").value }; }
+  function regexDraftFromEditor() { return regexDataFromEditor(); }
   function loreDraftFromEditor(n) { const d = jsonCopy((n && n.data) || {}) || {}; d.content = $("loreEdit").value; return d; }
   function logDraftFromEditor(n) {
     const d = jsonCopy((n && n.data) || {}) || {};
@@ -714,6 +762,7 @@
     if (!n || !d || !d.data) return false;
     if (d.type === "free") return !jsonSame({ html: noteHtml(n) }, d.data);
     if (d.type === "html") return !jsonSame({ source: htmlSourceOf(n) }, d.data);
+    if (d.type === "regex") return !jsonSame(normalizeRegexData(n.data || {}), normalizeRegexData(d.data || {}));
     if (d.type === "lorebook") return !jsonSame((n.data || {}).content || "", d.data.content || "");
     if (d.type === "log") return !jsonSame(n.data || {}, d.data);
     if (d.type === "persona") {
@@ -732,6 +781,9 @@
     } else if (d.type === "html") {
       n.data = n.data || {}; n.data.source = String((d.data && d.data.source) || "").slice(0, HTML_SOURCE_MAX);
       n.data.previewPolicy = "sandbox-web";
+      await saveNote(n);
+    } else if (d.type === "regex") {
+      n.data = normalizeRegexData(d.data || {});
       await saveNote(n);
     } else if (d.type === "lorebook") {
       n.data = Object.assign({}, n.data || {}, jsonCopy(d.data) || {});
@@ -783,8 +835,8 @@
   }
 
   /* ---------- routing ---------- */
-  const SCREENS = ["home", "project", "read", "editor", "html", "lore", "log", "persona", "character", "idea", "settings", "search"];
-  const NOTE_SCREENS = new Set(["read", "editor", "html", "lore", "log", "persona", "character", "idea"]);
+  const SCREENS = ["home", "project", "read", "editor", "html", "regex", "lore", "log", "persona", "character", "idea", "settings", "search"];
+  const NOTE_SCREENS = new Set(["read", "editor", "html", "regex", "lore", "log", "persona", "character", "idea"]);
   function showScreen(s) { SCREENS.forEach((x) => $("screen-" + x).classList.toggle("active", x === s)); }
   function curView() { return st.viewStack[st.viewStack.length - 1]; }
   function normalizeRouteView(view) {
@@ -804,6 +856,7 @@
     else if (v.s === "read") renderRead();
     else if (v.s === "editor") renderEditorMeta();
     else if (v.s === "html") renderHtmlWorkshop();
+    else if (v.s === "regex") renderRegexWorkshop();
     else if (v.s === "lore") renderLore();
     else if (v.s === "log") renderLog();
     else if (v.s === "persona") renderPersona();
@@ -831,6 +884,12 @@
       void (async () => { try { await leaveHtmlWorkshop(); commitGo(view); } finally { navTransition = false; } })();
       return;
     }
+    if (cur && cur.s === "regex" && view && view.s !== "regex") {
+      if (navTransition) return;
+      navTransition = true;
+      void (async () => { try { await leaveRegexWorkshop(); commitGo(view); } finally { navTransition = false; } })();
+      return;
+    }
     if (cur && cur.s === "idea" && view && view.s !== "idea") {
       if (navTransition) return;
       navTransition = true;
@@ -848,6 +907,7 @@
   async function flushCurrentView(cur) {
     if (cur === "editor") await leaveFreeEditor();
     else if (cur === "html") await leaveHtmlWorkshop();
+    else if (cur === "regex") await leaveRegexWorkshop();
     else if (cur === "lore") await flushLore();
     else if (cur === "log") await flushLog();
     else if (cur === "persona") await flushPersona();
@@ -1001,8 +1061,8 @@
   const PIN_SVG = '<svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3z"/><path d="M12 15v5"/></svg>';
   const PIN_STAR = '<svg class="pin-star" viewBox="0 0 24 24"><path d="M12 2l2.7 6.6 7 .5-5.4 4.5 1.8 6.9L12 17.3 5.9 21l1.8-6.9L2.3 9.1l7-.5z"/></svg>';
   const SORT_LABELS = { recent: "최신순", recent_asc: "오래된순", name: "이름 ㄱ→ㅎ", name_desc: "이름 ㅎ→ㄱ" };
-  const TYPE_COLOR = { free: "#7b9bff", html: "#5eead4", lorebook: "#6ad0ff", log: "#f0a44d", persona: "#c79bff", character: "#ff9fcb", idea: "#f0c967" };
-  const TYPE_TAG = { free: "F", html: "H", lorebook: "R", log: "L", persona: "P", character: "C", idea: "I" };
+  const TYPE_COLOR = { free: "#7b9bff", html: "#5eead4", regex: "#4ad1a7", lorebook: "#6ad0ff", log: "#f0a44d", persona: "#c79bff", character: "#ff9fcb", idea: "#f0c967" };
+  const TYPE_TAG = { free: "F", html: "H", regex: "X", lorebook: "R", log: "L", persona: "P", character: "C", idea: "I" };
   // Persona and character notes share the card editor, but stay separate memo types.
   function isCharacterCardType(n) { return !!n && (n.type === "character" || n.type === "persona"); }
   function characterMode(n) {
@@ -1015,7 +1075,7 @@
   function noteTypeLabel(n) { return TYPE_LABEL[visualMemoType(n)] || (n && n.type) || ""; }
   function noteTypeShortLabel(n) {
     const type = visualMemoType(n);
-    return ({ free:"자유메모", html:"HTML", lorebook:"로어북", log:"로그", persona:"페르소나", character:"캐릭터", idea:"아이디어 보드" })[type] || noteTypeLabel(n);
+    return ({ free:"자유메모", html:"HTML", regex:"정규식", lorebook:"로어북", log:"로그", persona:"페르소나", character:"캐릭터", idea:"아이디어 보드" })[type] || noteTypeLabel(n);
   }
   function noteSectionKey(n) { return n && n.type ? n.type : ""; }
   function memoTagHTML(n) { const type = visualMemoType(n); return `<span class="memo-tag t-${type}">${TYPE_TAG[type] || "?"}</span>`; }
@@ -1200,7 +1260,7 @@
     } else {
       const dotStyle = col ? `background:${col};box-shadow:0 0 8px ${col}` : "";
       lead = `<span class="mc-dot" style="${dotStyle}"></span>`;
-      meta = n.type === "idea" ? ideaBoardSummary(n) : n.type === "lorebook" ? `키워드 ${((n.data && n.data.keywords) || []).length}개${n.data && n.data.alwaysActive ? " · 항상 활성" : ""}` : n.type === "log" ? (String((n.data && n.data.content) || "").replace(/\s+/g, " ").trim().slice(0, 60) || "빈 로그") : n.type === "html" ? (htmlSourceSummary(n) || "빈 HTML 소스") : (preview(noteHtml(n)) || "빈 메모");
+      meta = n.type === "idea" ? ideaBoardSummary(n) : n.type === "lorebook" ? `키워드 ${((n.data && n.data.keywords) || []).length}개${n.data && n.data.alwaysActive ? " · 항상 활성" : ""}` : n.type === "log" ? (String((n.data && n.data.content) || "").replace(/\s+/g, " ").trim().slice(0, 60) || "빈 로그") : n.type === "html" ? (htmlSourceSummary(n) || "빈 코드 원본") : n.type === "regex" ? (regexSourceSummary(n) || "빈 정규식") : (preview(noteHtml(n)) || "빈 메모");
     }
     chip.innerHTML = '<span class="sel-check"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></svg></span>' + lead +
       `<div class="mc-body"><div class="mc-title">${esc(n.title)}${n.pinned ? PIN_STAR : ""}</div><div class="mc-meta">${fmtDate(n.updatedAt)} · ${esc(meta)}</div></div>` +
@@ -1232,7 +1292,7 @@
     const wrap = $("pdChips");
     if (!ns.length) { wrap.innerHTML = `<div class="grid-empty">이 프로젝트에 메모가 없어요.<br>아래 + 버튼으로 추가하세요.</div>`; return; }
     wrap.innerHTML = "";
-    const SECTIONS = [["persona", "페르소나"], ["character", "캐릭터"], ["log", "로그 저장"], ["lorebook", "로어북"], ["html", "HTML 작업실"], ["idea", "아이디어 보드"], ["free", "자유 메모"]];
+    const SECTIONS = [["persona", "페르소나"], ["character", "캐릭터"], ["log", "로그 저장"], ["lorebook", "로어북"], ["html", "코드 작업실"], ["regex", "정규식 작업실"], ["idea", "아이디어 보드"], ["free", "자유 메모"]];
     let firstSec = true;
     SECTIONS.forEach(([t, label]) => {
       const group = ns.filter((n) => noteSectionKey(n) === t);
@@ -1259,6 +1319,7 @@
     // 메모 디자인은 유지하면서 앱 전체 UI를 덮어쓰지 않게 해요.
     $("readBody").innerHTML = `<div class="lumink-user-html">${noteHtml(n)}</div>`;
     normalizeLinks($("readBody"));
+    bindInternalNoteLinks($("readBody"));
     addCodeCopyButtons($("readBody"));
     renderAttachments("readAttach", n, false);
   }
@@ -1297,6 +1358,7 @@
     try {
       if (curView().s === "editor") await leaveFreeEditor();
       else if (curView().s === "html") await leaveHtmlWorkshop();
+      else if (curView().s === "regex") await leaveRegexWorkshop();
       else if (curView().s === "log") await flushLog();
       else if (curView().s === "idea") await flushIdeaBoard();
       st.curProjectId = id; commitGo({ s: "project" }); renderSidebar();
@@ -1305,6 +1367,7 @@
   async function flushPending() {
     if (curView().s === "editor") await leaveFreeEditor();
     else if (curView().s === "html") await leaveHtmlWorkshop();
+    else if (curView().s === "regex") await leaveRegexWorkshop();
     else if (st.saveTimer || (freeEditorSession && freeEditorSession.active)) await flushSave(true);
     if (loreTimer) await flushLore();
     if (logTimer) await flushLog();
@@ -1321,6 +1384,7 @@
       st.curNoteId = id;
       if (n.type === "free") commitGo({ s: "read" });
       else if (n.type === "html") commitGo({ s: "html" });
+      else if (n.type === "regex") commitGo({ s: "regex" });
       else if (n.type === "lorebook") commitGo({ s: "lore" });
       else if (n.type === "log") { logEditMode = false; commitGo({ s: "log" }); }
       else if (isCharacterCardType(n)) { st.charEdit = false; commitGo({ s: "character" }); }
@@ -1333,7 +1397,7 @@
     if (navTransition) return;
     navTransition = true;
     try {
-      closeSidebar(); if (curView().s === "editor") await leaveFreeEditor(); else if (curView().s === "html") await leaveHtmlWorkshop(); else if (curView().s === "log") await flushLog(); else if (curView().s === "idea") await flushIdeaBoard();
+      closeSidebar(); if (curView().s === "editor") await leaveFreeEditor(); else if (curView().s === "html") await leaveHtmlWorkshop(); else if (curView().s === "regex") await leaveRegexWorkshop(); else if (curView().s === "log") await flushLog(); else if (curView().s === "idea") await flushIdeaBoard();
       st.viewStack = [{ s: "home" }]; history.replaceState({ d: 1 }, ""); render();
     } finally { navTransition = false; }
   }
@@ -1498,11 +1562,12 @@
     const personaTitle = characterModeOption === "single" ? "이름 없는 페르소나" : "이름 없는 페르소나 모음";
     const n = {
       id: uid(), projectId, type,
-      title: type === "lorebook" ? "이름 없는 로어북" : type === "log" ? "이름 없는 로그" : type === "idea" ? "새 아이디어 보드" : type === "persona" ? personaTitle : type === "character" ? characterTitle : type === "html" ? "제목 없는 HTML 작업실" : "제목 없는 메모",
+      title: type === "lorebook" ? "이름 없는 로어북" : type === "log" ? "이름 없는 로그" : type === "idea" ? "새 아이디어 보드" : type === "persona" ? personaTitle : type === "character" ? characterTitle : type === "html" ? "제목 없는 코드 작업실" : type === "regex" ? "새 정규식 작업실" : "제목 없는 메모",
       titleLocked: type === "lorebook",
       chipColor: null, createdAt: now(), updatedAt: now(),
       data: type === "free" ? { html: "" }
-          : type === "html" ? { source: "", previewPolicy: "sandbox-web" }
+          : type === "html" ? { source: "", previewPolicy: "sandbox-web", exportFormat: "html" }
+          : type === "regex" ? makeRegexData()
           : type === "lorebook" ? { content: "", keywords: [], alwaysActive: false, depthOn: false, depth: 4 }
           : type === "log" ? { content: "", templateId: "system-ink-frame", personaName: "", personaAlias: "", templateSnapshot: null }
           : (type === "persona" || type === "character") ? { mode: characterModeOption, activeId: null, pages: [makeCharacterPage()], cardTypeVersion: 2 }
@@ -1537,8 +1602,40 @@
 
 
 
-  /* ---------- HTML workshop: source stays a string, preview stays in an opaque sandbox ---------- */
+  /* ---------- Code workshop: source stays a string, preview is isolated or text-only ---------- */
+  // 내부 메모 타입은 기존 백업 호환을 위해 html을 유지하지만, 사용자 화면에서는 코드 작업실로 표시합니다.
+  // exportFormat은 열어 온 원본 형식과 다음 파일 저장의 기본값입니다. 원본 문자열은 절대 변형하지 않습니다.
   function htmlSourceOf(n) { return (n && n.data && typeof n.data.source === "string") ? n.data.source : ""; }
+  function htmlExportFormatOf(n) {
+    const format = n && n.data && n.data.exportFormat;
+    return format === "json" || format === "md" ? format : "html";
+  }
+  function htmlExportMime(format) {
+    return format === "json" ? "application/json;charset=utf-8" : format === "md" ? "text/markdown;charset=utf-8" : "text/html;charset=utf-8";
+  }
+  function htmlSourceKindLabel(n) {
+    return ({ html: "HTML", json: "JSON", md: "MARKDOWN" })[htmlExportFormatOf(n)] || "CODE";
+  }
+  function htmlSourceHint(n) {
+    const format = htmlExportFormatOf(n);
+    if (format === "json") return "· JSON 원문 그대로 저장 · 파일 저장에서 .html / .json / .md 선택";
+    if (format === "md") return "· Markdown 원문 그대로 저장 · 파일 저장에서 .html / .json / .md 선택";
+    return "· HTML 원문 그대로 저장 · 파일 저장에서 .html / .json / .md 선택";
+  }
+  function htmlFileBaseName(name) {
+    const base = String(name || "code-workshop").replace(/\.(?:html?|json|md|markdown|mdown|mkdn|mkd)$/i, "").replace(/[\\/:*?\"<>|]+/g, "_").trim();
+    return (base || "code-workshop").slice(0, 80);
+  }
+  function jsonSourceValidation(source) {
+    try {
+      JSON.parse(String(source || "").replace(/^\uFEFF/, ""));
+      return { ok: true, error: "" };
+    } catch (error) {
+      const message = String(error && error.message ? error.message : "JSON 형식이 올바르지 않아요");
+      const position = message.match(/position\s+(\d+)/i);
+      return { ok: false, error: position ? `JSON 문법 오류 · ${position[1]}번째 글자 부근을 확인해 주세요` : `JSON 문법 오류 · ${message}` };
+    }
+  }
   function htmlSourceSummary(n) {
     const source = htmlSourceOf(n);
     if (!source.trim()) return "";
@@ -1581,11 +1678,135 @@
     head.insertBefore(guard, csp.nextSibling);
     return "<!doctype html>\n" + doc.documentElement.outerHTML;
   }
-  function refreshHtmlPreview(source) {
+  function buildPlainCodePreview(source, format) {
+    const label = format === "json" ? "JSON 원문 보기" : "원문 보기";
+    const color = "#87b5ff";
+    return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${label}</title><style>html,body{margin:0;min-height:100%;background:#101622;color:#e8edf8;font-family:ui-monospace,SFMono-Regular,Consolas,'D2Coding',monospace}header{position:sticky;top:0;padding:11px 14px;background:#161f31;border-bottom:1px solid #29364e;color:${color};font:700 12px/1.4 -apple-system,BlinkMacSystemFont,'Noto Sans KR',sans-serif;letter-spacing:.08em}pre{margin:0;padding:18px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.72;tab-size:2}</style><body><header>${label} · 렌더링 없이 원문만 표시</header><pre>${esc(String(source || ""))}</pre></body></html>`;
+  }
+  function markdownPreviewEscape(value) {
+    return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function markdownPreviewUrl(value, image) {
+    const raw = String(value == null ? "" : value).trim();
+    if (!raw) return "";
+    if (/^data:image\/(?:png|gif|jpe?g|webp|avif);base64,/i.test(raw)) return image ? raw : "";
+    try {
+      const parsed = new URL(raw, window.location.href);
+      const protocol = String(parsed.protocol || "").toLowerCase();
+      if (protocol === "http:" || protocol === "https:") return raw;
+      if (!image && protocol === "mailto:") return raw;
+    } catch (e) {}
+    return "";
+  }
+  function markdownPreviewInline(value) {
+    let source = String(value == null ? "" : value);
+    const slots = [];
+    const slot = (html) => {
+      const token = `\uE000${slots.length}\uE001`;
+      slots.push(html); return token;
+    };
+    source = source.replace(/`([^`\n]+)`/g, (all, code) => slot(`<code>${markdownPreviewEscape(code)}</code>`));
+    source = source.replace(/!\[([^\]]*)\]\(\s*<?([^\s>)]+)>?(?:\s+['\"][^'\"]*['\"])?\s*\)/g, (all, alt, url) => {
+      const safe = markdownPreviewUrl(url, true);
+      return safe ? slot(`<img src="${markdownPreviewEscape(safe)}" alt="${markdownPreviewEscape(alt)}" loading="lazy">`) : markdownPreviewEscape(all);
+    });
+    source = source.replace(/\[([^\]]+)\]\(\s*<?([^\s>)]+)>?(?:\s+['\"][^'\"]*['\"])?\s*\)/g, (all, label, url) => {
+      const safe = markdownPreviewUrl(url, false);
+      return safe ? slot(`<a href="${markdownPreviewEscape(safe)}" target="_blank" rel="noopener noreferrer">${markdownPreviewEscape(label)}</a>`) : markdownPreviewEscape(all);
+    });
+    source = markdownPreviewEscape(source);
+    source = source.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+    source = source.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    source = source.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+    source = source.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    source = source.replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
+    return source.replace(/\uE000(\d+)\uE001/g, (all, index) => slots[Number(index)] || "");
+  }
+  function markdownPreviewTableCells(line) {
+    let row = String(line == null ? "" : line).trim();
+    if (row.startsWith("|")) row = row.slice(1);
+    if (row.endsWith("|")) row = row.slice(0, -1);
+    return row.split("|").map((cell) => cell.trim());
+  }
+  function markdownPreviewIsTableDivider(line) {
+    const cells = markdownPreviewTableCells(line);
+    return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
+  }
+  function markdownPreviewHtml(source) {
+    const lines = String(source == null ? "" : source).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n");
+    const out = []; let i = 0; let paragraph = [];
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      out.push(`<p>${paragraph.map(markdownPreviewInline).join("<br>")}</p>`);
+      paragraph = [];
+    };
+    const isFence = (line) => /^\s*```/.test(line);
+    while (i < lines.length) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      if (!trimmed) { flushParagraph(); i++; continue; }
+      if (isFence(raw)) {
+        flushParagraph();
+        const language = (raw.match(/^\s*```\s*([^\s`]*)/) || ["", ""])[1].replace(/[^a-z0-9_+-]/gi, "").slice(0, 32);
+        const code = []; i++;
+        while (i < lines.length && !isFence(lines[i])) { code.push(lines[i]); i++; }
+        if (i < lines.length) i++;
+        out.push(`<pre class="md-code"><code${language ? ` class="language-${language}"` : ""}>${markdownPreviewEscape(code.join("\n"))}</code></pre>`);
+        continue;
+      }
+      const heading = raw.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) { flushParagraph(); const level = heading[1].length; out.push(`<h${level}>${markdownPreviewInline(heading[2])}</h${level}>`); i++; continue; }
+      if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(raw)) { flushParagraph(); out.push("<hr>"); i++; continue; }
+      if (i + 1 < lines.length && /\|/.test(raw) && markdownPreviewIsTableDivider(lines[i + 1])) {
+        flushParagraph();
+        const headers = markdownPreviewTableCells(raw), aligns = markdownPreviewTableCells(lines[i + 1]);
+        const alignFor = (cell) => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : cell.startsWith(":") ? "left" : "left";
+        const rows = []; i += 2;
+        while (i < lines.length && lines[i].trim() && /\|/.test(lines[i])) { rows.push(markdownPreviewTableCells(lines[i])); i++; }
+        out.push(`<div class="md-table-wrap"><table><thead><tr>${headers.map((cell, index) => `<th style="text-align:${alignFor(aligns[index] || "")}">${markdownPreviewInline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${headers.map((_, index) => `<td style="text-align:${alignFor(aligns[index] || "")}">${markdownPreviewInline(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+        continue;
+      }
+      if (/^\s*>/.test(raw)) {
+        flushParagraph(); const quote = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) { quote.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+        out.push(`<blockquote>${quote.map(markdownPreviewInline).join("<br>")}</blockquote>`);
+        continue;
+      }
+      const listMatch = raw.match(/^(\s*)([-+*]|\d+[.)])\s+(.+)$/);
+      if (listMatch) {
+        flushParagraph(); const ordered = /\d/.test(listMatch[2]); const items = [];
+        while (i < lines.length) {
+          const current = lines[i].match(/^(\s*)([-+*]|\d+[.)])\s+(.+)$/);
+          if (!current || /\d/.test(current[2]) !== ordered) break;
+          const task = current[3].match(/^\[([ xX])\]\s+(.*)$/);
+          items.push(task
+            ? `<li class="task-item"><input type="checkbox" disabled ${/[xX]/.test(task[1]) ? "checked" : ""}><span>${markdownPreviewInline(task[2])}</span></li>`
+            : `<li>${markdownPreviewInline(current[3])}</li>`);
+          i++;
+        }
+        out.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
+        continue;
+      }
+      paragraph.push(raw); i++;
+    }
+    flushParagraph();
+    return out.join("\n") || '<p class="md-empty">미리볼 Markdown 내용이 없습니다.</p>';
+  }
+  function buildMarkdownPreview(source) {
+    const body = markdownPreviewHtml(source);
+    const csp = "default-src 'none'; img-src https: http: data: blob:; style-src 'unsafe-inline'; font-src https: http: data:; base-uri 'none'; form-action 'none'; frame-src 'none'; child-src 'none'; script-src 'none'; object-src 'none'";
+    return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><title>Markdown 미리보기</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}html,body{margin:0;min-height:100%}body{background:#eef2f8;color:#202735;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans KR',sans-serif;line-height:1.78}.md-document{min-height:100vh;max-width:940px;margin:0 auto;padding:clamp(22px,5vw,56px);background:#fff;box-shadow:0 0 0 1px rgba(28,44,72,.05)}h1,h2,h3,h4,h5,h6{color:#19243a;line-height:1.35;margin:1.45em 0 .6em;font-weight:800;letter-spacing:-.02em}h1{font-size:2em;padding-bottom:.38em;border-bottom:2px solid #d9e2f1}h2{font-size:1.56em;padding-bottom:.3em;border-bottom:1px solid #e0e7f1}h3{font-size:1.27em}h4{font-size:1.08em}h5,h6{font-size:1em}h1:first-child,h2:first-child,h3:first-child{margin-top:0}p{margin:.1em 0 1em}a{color:#265fb8;text-decoration:underline;text-decoration-color:rgba(38,95,184,.3);text-underline-offset:2px}a:hover{color:#143c7c}code{font-family:ui-monospace,SFMono-Regular,Consolas,'D2Coding',monospace;font-size:.9em;background:#f0f4fa;color:#204c87;padding:.14em .36em;border-radius:5px;overflow-wrap:anywhere}.md-code{margin:1.15em 0;padding:15px 17px;overflow:auto;border:1px solid #202a3a;border-radius:12px;background:#101622;color:#dfe9f8;box-shadow:0 9px 22px rgba(20,31,49,.18)}.md-code code{display:block;padding:0;background:transparent;color:inherit;font-size:12.5px;line-height:1.7;white-space:pre}blockquote{margin:1.1em 0;padding:.72em 1em;border-left:4px solid #7d9dce;background:#f5f8fc;color:#4c5a70;border-radius:0 10px 10px 0}hr{border:0;border-top:1px solid #d9e2ef;margin:2em 0}ul,ol{margin:.35em 0 1.15em;padding-left:1.5em}li{margin:.32em 0}.task-item{list-style:none;margin-left:-1.25em;display:flex;align-items:flex-start;gap:.55em}.task-item input{margin:.46em 0 0;accent-color:#477bca}img{display:block;max-width:100%;height:auto;margin:1.15em 0;border-radius:12px;border:1px solid #dbe3f0;background:#f3f6fb;box-shadow:0 9px 24px rgba(32,50,78,.12)}.md-table-wrap{overflow:auto;margin:1.15em 0;border:1px solid #d8e1ee;border-radius:11px}table{border-collapse:collapse;width:100%;min-width:480px;font-size:.94em}th,td{padding:.64em .74em;border-bottom:1px solid #e2e8f1;vertical-align:top}th{background:#eef3fa;color:#223555;font-weight:800}tr:last-child td{border-bottom:0}.md-empty{color:#7b8799;font-style:italic}@media (prefers-color-scheme:dark){body{background:#0d131d;color:#dce5f3}.md-document{background:#111a27;box-shadow:none}h1,h2,h3,h4,h5,h6{color:#f1f6ff}h1{border-color:#32445d}h2{border-color:#2a3a50}a{color:#9ac2ff}a:hover{color:#d1e4ff}code{background:#1a2940;color:#b9d7ff}blockquote{background:#162337;color:#b9c8dc;border-color:#7fa2d9}.md-code{border-color:#37475f;background:#0b1018}.md-table-wrap{border-color:#32435a}th,td{border-color:#2b3b51}th{background:#18263a;color:#deebff}img{border-color:#34465f;background:#151f2d}}</style></head><body><main class="md-document">${body}</main></body></html>`;
+  }
+  function refreshHtmlPreview(source, format) {
     const frame = $("htmlPreview"); if (!frame) return;
-    try { frame.srcdoc = buildSandboxPreview(source); } catch (e) { frame.srcdoc = "<!doctype html><meta charset='utf-8'><pre>미리보기를 만들지 못했어요.</pre>"; }
+    const note = getNote(st.curNoteId);
+    const kind = format || htmlExportFormatOf(note);
+    try { frame.srcdoc = kind === "html" ? buildSandboxPreview(source) : kind === "md" ? buildMarkdownPreview(source) : buildPlainCodePreview(source, "json"); }
+    catch (e) { frame.srcdoc = "<!doctype html><meta charset='utf-8'><pre>미리보기를 만들지 못했어요.</pre>"; }
   }
   function openHtmlPreviewPage() {
+    const note = getNote(st.curNoteId);
+    if (!note || htmlExportFormatOf(note) !== "html") { toast("웹페이지로 열기는 HTML 원문에서만 사용할 수 있어요"); return; }
     const source = $("htmlSource").value || "<!doctype html><meta charset='utf-8'>";
     const blob = new Blob([source], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1647,7 +1868,7 @@
     const noteId = session.noteId, n = getNote(noteId);
     if (!n || n.type !== "html") return Promise.resolve();
     const draft = htmlDraftFromEditor(), source = draft.source, revision = session.revision;
-    if (source.length > HTML_SOURCE_MAX) { toast("HTML 원본은 5MB 이하로 저장할 수 있어요"); return Promise.resolve(); }
+    if (source.length > HTML_SOURCE_MAX) { toast("코드 원본은 5MB 이하로 저장할 수 있어요"); return Promise.resolve(); }
     if (session.lastQueuedRevision === revision) return session.inFlight || Promise.resolve();
     session.lastQueuedRevision = revision;
     const write = async () => {
@@ -1674,31 +1895,664 @@
       clearTimeout(st.saveTimer); st.saveTimer = null; clearTimeout(htmlPreviewTimer);
     }
   }
+  function syncCodeWorkshopFormatUi(n) {
+    const note = n || getNote(st.curNoteId); if (!note || note.type !== "html") return;
+    const format = htmlExportFormatOf(note);
+    const kind = $("htmlSourceKind"), hint = $("htmlSourceFormatHint"), screen = $("screen-html");
+    if (kind) kind.textContent = htmlSourceKindLabel(note);
+    if (hint) hint.textContent = htmlSourceHint(note);
+    if (screen) screen.dataset.codeFormat = format;
+    const pageButton = $("htmlOpenPage");
+    if (pageButton) {
+      const enabled = format === "html";
+      pageButton.disabled = !enabled;
+      pageButton.title = enabled ? "웹페이지로 열기" : "웹페이지로 열기는 HTML 원문에서만 가능";
+      pageButton.setAttribute("aria-label", pageButton.title);
+    }
+    const previewKicker = $("htmlPreviewKicker"), previewNote = $("htmlPreviewNote"), frame = $("htmlPreview");
+    if (previewKicker) previewKicker.textContent = format === "html" ? "Sandbox preview" : format === "md" ? "Markdown preview" : "Raw text view";
+    if (previewNote) previewNote.textContent = format === "html" ? "JavaScript · 폼 · 앱 접근 차단" : format === "md" ? "Markdown 렌더링 · HTML 실행 차단" : "렌더링 없이 원문만 표시";
+    if (frame) frame.title = format === "html" ? "코드 작업실 HTML 미리보기" : format === "md" ? "코드 작업실 Markdown 미리보기" : `${htmlSourceKindLabel(note)} 원문 보기`;
+  }
   function renderHtmlWorkshop() {
     const n = getNote(st.curNoteId);
     if (!n || n.type !== "html") { back(); return; }
     beginHtmlWorkshopSession(n);
-    $("htmlTitle").textContent = n.title || "HTML 작업실";
+    $("htmlTitle").textContent = n.title || "코드 작업실";
+    syncCodeWorkshopFormatUi(n);
     setHtmlSaver(""); queueDraftRecovery(n, "html");
   }
-  function exportHtmlSource(id) {
-    const n = getNote(id); if (!n || n.type !== "html") return;
-    const safeName = (n.title || "html-workshop").replace(/[\\/:*?\"<>|]+/g, "_").slice(0, 80) || "html-workshop";
-    // 원본 문자열을 문서 래퍼 없이 바로 Blob으로 내보내므로, 앱이 태그·속성·서식을 덧붙이지 않습니다.
-    downloadDoc(htmlSourceOf(n), `${safeName}.html`, "text/html");
-    toast("원본 HTML을 저장했어요");
+  async function saveHtmlWorkshopFile(id, format, requestedName) {
+    const n = getNote(id); if (!n || n.type !== "html") return false;
+    const chosen = format === "json" ? "json" : format === "md" ? "md" : "html";
+    await flushHtmlSave(true, id);
+    const source = (activeHtmlSession(id) && $("htmlSource")) ? $("htmlSource").value : htmlSourceOf(n);
+    if (chosen === "json") {
+      const check = jsonSourceValidation(source);
+      if (!check.ok) { toast(check.error); return false; }
+    }
+    const safeName = htmlFileBaseName(requestedName || n.title);
+    // 원본 문자열을 래핑·정화·재직렬화하지 않고, 사용자가 고른 확장자와 MIME으로만 저장합니다.
+    downloadDoc(source, `${safeName}.${chosen}`, htmlExportMime(chosen));
+    n.data = n.data || {}; n.data.exportFormat = chosen; n.data.previewPolicy = "sandbox-web";
+    await saveNote(n);
+    syncCodeWorkshopFormatUi(n);
+    refreshHtmlPreview(source, chosen);
+    toast(`${chosen === "md" ? "Markdown" : chosen.toUpperCase()} 파일을 저장했어요`);
+    return true;
   }
+  function showHtmlExportDialog(id) {
+    const n = getNote(id); if (!n || n.type !== "html") return;
+    let selected = htmlExportFormatOf(n);
+    const baseName = htmlFileBaseName(n.title || "code-workshop");
+    openModal(`<h3>파일로 저장</h3><p class="m-sub">현재 원문을 앱 내부 저장과 별도로 내려받습니다. <b>.json</b>을 고르면 저장 전에 JSON 문법을 검사하며, HTML·JSON·Markdown 중 원하는 확장자를 선택할 수 있습니다.</p><div class="m-field-label">파일 이름</div><input class="m-input" id="htmlExportName" maxlength="80" value="${esc(baseName)}" autocapitalize="off" autocorrect="off"><div class="m-field-label">확장자</div><div class="type-card html-export-choice ${selected === "html" ? "is-selected" : ""}" id="htmlExportAsHtml"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg></div><div><div class="tc-name">HTML · .html</div><div class="tc-desc">웹페이지·상태창·배너 원문으로 저장</div></div><span class="tc-soon">${selected === "html" ? "선택됨" : "선택"}</span></div><div class="type-card html-export-choice ${selected === "json" ? "is-selected" : ""}" id="htmlExportAsJson"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M7 5 3 12l4 7M17 5l4 7-4 7M13.5 3 10.5 21"/></svg></div><div><div class="tc-name">JSON · .json</div><div class="tc-desc">정렬·공백을 유지한 JSON 원문으로 저장</div></div><span class="tc-soon">${selected === "json" ? "선택됨" : "선택"}</span></div><div class="type-card html-export-choice ${selected === "md" ? "is-selected" : ""}" id="htmlExportAsMarkdown"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 16V9l2.5 3L13 9v7M15.5 10.5h1.5a1.5 1.5 0 0 1 0 3h-1.5v2.5"/></svg></div><div><div class="tc-name">Markdown · .md</div><div class="tc-desc">마크다운 문서 원문으로 저장</div></div><span class="tc-soon">${selected === "md" ? "선택됨" : "선택"}</span></div><div class="m-row"><button class="m-btn" id="htmlExportCancel">취소</button><button class="m-btn primary" id="htmlExportOk">파일 저장</button></div>`);
+    const draw = () => {
+      [["htmlExportAsHtml", "html"], ["htmlExportAsJson", "json"], ["htmlExportAsMarkdown", "md"]].forEach(([elId, format]) => {
+        const el = $(elId); if (!el) return;
+        const on = selected === format;
+        el.classList.toggle("is-selected", on);
+        const chip = el.querySelector(".tc-soon"); if (chip) chip.textContent = on ? "선택됨" : "선택";
+      });
+    };
+    $on("htmlExportAsHtml", "click", () => { selected = "html"; draw(); });
+    $on("htmlExportAsJson", "click", () => { selected = "json"; draw(); });
+    $on("htmlExportAsMarkdown", "click", () => { selected = "md"; draw(); });
+    $on("htmlExportCancel", "click", closeModal);
+    $on("htmlExportOk", "click", async () => {
+      const button = $("htmlExportOk");
+      if (button) { button.disabled = true; button.textContent = "저장 중…"; }
+      const ok = await saveHtmlWorkshopFile(id, selected, $("htmlExportName").value);
+      if (ok) closeModal();
+      else if (button) { button.disabled = false; button.textContent = "파일 저장"; }
+    });
+    setTimeout(() => { const input = $("htmlExportName"); if (input) { input.focus(); input.select(); } }, 80);
+  }
+  function exportHtmlSource(id) { showHtmlExportDialog(id); }
   function openHtmlSheet(n) {
     openSheet(n.title, [
       { icon: IC.pin, label: n.pinned ? "고정 해제" : "상단 고정", fn: () => togglePinNote(n.id) },
-      { icon: IC.rename, label: "이름 바꾸기", fn: () => renameModal("HTML 작업실 이름", n.title, async (v) => { if (v) { n.title = v; n.titleLocked = true; await saveNote(n); render(); } }) },
+      { icon: IC.rename, label: "이름 바꾸기", fn: () => renameModal("코드 작업실 이름", n.title, async (v) => { if (v) { n.title = v; n.titleLocked = true; await saveNote(n); render(); } }) },
       { icon: IC.color, label: "색상 지정", fn: () => showChipPicker(n.id) },
       { icon: IC.copy, label: "원본 코드 복사", fn: () => clipboardCopy(htmlSourceOf(n)).then((ok) => toast(ok ? "원본 코드를 복사했어요" : "복사하지 못했어요")) },
-      { icon: IC.save, label: "원본 .html로 내보내기", fn: () => exportHtmlSource(n.id) },
+      { icon: IC.save, label: "파일로 저장 (.html / .json / .md)", fn: () => exportHtmlSource(n.id) },
       { icon: IC.move, label: "다른 프로젝트로 이동", fn: () => pickTargetProject(n.projectId, (pid) => moveNote(n.id, pid).then(render)) },
       { icon: IC.copy, label: "선택 위치로 복제", fn: () => pickTargetProject(n.projectId, (pid) => duplicateNote(n.id, pid).then(render)) },
-      { icon: IC.del, label: "삭제", danger: true, fn: () => confirmModal("HTML 작업실 삭제", `'${n.title}'를 삭제할까요?`, "삭제", true, async () => { await deleteNote(n.id); back(); }) }
+      { icon: IC.del, label: "삭제", danger: true, fn: () => confirmModal("코드 작업실 삭제", `'${n.title}'를 삭제할까요?`, "삭제", true, async () => { await deleteNote(n.id); back(); }) }
     ]);
+  }
+
+  /* ---------- Regex workshop: SillyTavern findRegex / replaceString lab ---------- */
+  const REGEX_TRIM_MAX = 80;
+  const REGEX_PLACEMENTS = [1, 2, 3, 5, 6];
+  function regexSplitLiteral(value) {
+    const text = String(value || "").trim();
+    if (!text.startsWith("/")) return null;
+    let escaped = false, inClass = false;
+    for (let i = 1; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === "[") { inClass = true; continue; }
+      if (ch === "]") { inClass = false; continue; }
+      if (ch === "/" && !inClass) return { source: text.slice(1, i), flags: text.slice(i + 1), literal: true };
+    }
+    return { source: text.slice(1), flags: "", literal: true, unclosed: true };
+  }
+  function regexParseFind(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return { ok: false, error: "IN 정규식이 비어 있습니다.", source: "", flags: "" };
+    const literal = regexSplitLiteral(raw);
+    const source = literal ? literal.source : raw;
+    const flags = literal ? literal.flags : "";
+    if (literal && literal.unclosed) return { ok: false, error: "정규식 리터럴의 닫는 /가 없습니다.", source, flags };
+    try {
+      const re = new RegExp(source, flags);
+      return { ok: true, error: "", source, flags, regex: re, literal: !!literal };
+    } catch (error) {
+      return { ok: false, error: (error && error.message) ? error.message : "정규식 문법 오류입니다.", source, flags };
+    }
+  }
+  function regexCountCaptures(source) {
+    let count = 0, escaped = false, inClass = false;
+    const text = String(source || "");
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === "[") { inClass = true; continue; }
+      if (ch === "]") { inClass = false; continue; }
+      if (ch !== "(" || inClass) continue;
+      if (text[i + 1] !== "?") { count++; continue; }
+      if (text[i + 2] === "<" && text[i + 3] !== "=" && text[i + 3] !== "!") count++;
+    }
+    return count;
+  }
+  function regexMaxReplacementIndex(value) {
+    let max = 0;
+    String(value || "").replace(/\$(\d{1,2})/g, (_, n) => { max = Math.max(max, Number(n) || 0); return _; });
+    return max;
+  }
+  function regexUniqueFlags(flags) {
+    const out = [];
+    String(flags || "").split("").forEach((flag) => { if (flag && !out.includes(flag)) out.push(flag); });
+    return out.join("");
+  }
+  function regexEscapeForLiteral(source) {
+    let out = "", escaped = false, inClass = false;
+    for (const ch of String(source || "")) {
+      if (escaped) { out += ch; escaped = false; continue; }
+      if (ch === "\\") { out += ch; escaped = true; continue; }
+      if (ch === "[") { inClass = true; out += ch; continue; }
+      if (ch === "]") { inClass = false; out += ch; continue; }
+      out += (ch === "/" && !inClass) ? "\\/" : ch;
+    }
+    return out;
+  }
+  function regexSetGlobalInFind(value, enabled) {
+    const raw = String(value || "").trim();
+    if (!raw) return enabled ? "//g" : "";
+    const literal = regexSplitLiteral(raw);
+    if (enabled) {
+      if (literal && !literal.unclosed) return `/${literal.source}/${regexUniqueFlags(literal.flags + "g")}`;
+      return `/${regexEscapeForLiteral(raw)}/g`;
+    }
+    if (literal && !literal.unclosed) return literal.source;
+    return raw;
+  }
+  function regexNullableNumber(value) {
+    const text = String(value == null ? "" : value).trim();
+    if (!text) return null;
+    const n = Number(text);
+    return Number.isFinite(n) ? Math.max(0, Math.min(999, Math.round(n))) : null;
+  }
+  function makeRegexData() {
+    return normalizeRegexData({
+      id: uid(), scriptName: "", findRegex: "", replaceString: "", sampleText: "", global: false,
+      trimStrings: [], placement: [], disabled: false, markdownOnly: false, promptOnly: false,
+      runOnEdit: false, substituteRegex: 0, minDepth: null, maxDepth: null
+    });
+  }
+  function normalizeRegexData(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const placement = Array.isArray(src.placement)
+      ? Array.from(new Set(src.placement.map((n) => Number(n)).filter((n) => REGEX_PLACEMENTS.includes(n))))
+      : [];
+    const trimSource = Array.isArray(src.trimStrings) ? src.trimStrings : (typeof src.trimStrings === "string" ? src.trimStrings.split(/\r?\n/) : []);
+    const findRegex = String(src.findRegex || "");
+    const literal = regexSplitLiteral(findRegex);
+    return {
+      id: String(src.id || src.stId || uid()).slice(0, 180),
+      scriptName: String(src.scriptName || "").slice(0, 180),
+      findRegex: findRegex.slice(0, HTML_SOURCE_MAX),
+      replaceString: String(src.replaceString || "").slice(0, HTML_SOURCE_MAX),
+      sampleText: String(src.sampleText || "").slice(0, HTML_SOURCE_MAX),
+      global: !!(literal && !literal.unclosed && /g/.test(literal.flags)) || (typeof src.global === "boolean" ? src.global : false),
+      trimStrings: trimSource.map((item) => String(item || "").trim()).filter(Boolean).slice(0, REGEX_TRIM_MAX),
+      placement: placement.length ? placement : [],
+      disabled: !!src.disabled,
+      markdownOnly: !!src.markdownOnly,
+      promptOnly: !!src.promptOnly,
+      runOnEdit: !!src.runOnEdit,
+      substituteRegex: Math.max(0, Math.min(2, Number(src.substituteRegex) || 0)),
+      minDepth: regexNullableNumber(src.minDepth),
+      maxDepth: regexNullableNumber(src.maxDepth)
+    };
+  }
+  // The sample textarea remains the single source of truth. This overlay only paints complete
+  // [[…]] segments as capture-like slots so users can scan flexible values at a glance.
+  function regexSampleHighlightMarkup(value) {
+    const raw = String(value || "");
+    if (!raw) return "";
+    let html = "", index = 0, match;
+    const token = /\[\[([\s\S]*?)\]\]/g;
+    while ((match = token.exec(raw))) {
+      html += esc(raw.slice(index, match.index));
+      html += `<span class="rx-sample-token"><span class="rx-sample-bracket">[[</span>${esc(match[1])}<span class="rx-sample-bracket">]]</span></span>`;
+      index = match.index + match[0].length;
+    }
+    html += esc(raw.slice(index));
+    // A final line break is otherwise visually collapsed by <pre> at the bottom edge.
+    if (raw.endsWith("\n")) html += " ";
+    return html;
+  }
+  function syncRegexSampleHighlight() {
+    const area = $("regexSample"), highlight = $("regexSampleHighlight");
+    if (!area || !highlight) return;
+    highlight.scrollTop = area.scrollTop;
+    highlight.scrollLeft = area.scrollLeft;
+  }
+  function updateRegexSampleHighlight() {
+    const area = $("regexSample"), highlight = $("regexSampleHighlight");
+    if (!area || !highlight) return;
+    highlight.innerHTML = regexSampleHighlightMarkup(area.value);
+    syncRegexSampleHighlight();
+  }
+
+  function regexDataFromEditor() {
+    const current = getNote(st.curNoteId);
+    const placement = Array.from(document.querySelectorAll("[data-regex-placement]:checked"))
+      .map((input) => Number(input.dataset.regexPlacement))
+      .filter((n) => REGEX_PLACEMENTS.includes(n));
+    return normalizeRegexData({
+      id: (current && current.data && current.data.id) || (current && current.id),
+      scriptName: $("regexScriptName") ? $("regexScriptName").value : "",
+      findRegex: $("regexFind") ? $("regexFind").value : "",
+      replaceString: $("regexReplace") ? $("regexReplace").value : "",
+      sampleText: $("regexSample") ? $("regexSample").value : "",
+      global: $("regexGlobal") ? $("regexGlobal").checked : false,
+      trimStrings: $("regexTrimStrings") ? $("regexTrimStrings").value.split(/\r?\n/) : [],
+      placement,
+      disabled: $("regexDisabled") ? $("regexDisabled").checked : false,
+      markdownOnly: $("regexMarkdownOnly") ? $("regexMarkdownOnly").checked : false,
+      promptOnly: $("regexPromptOnly") ? $("regexPromptOnly").checked : false,
+      runOnEdit: $("regexRunOnEdit") ? $("regexRunOnEdit").checked : false,
+      substituteRegex: $("regexSubstituteRegex") ? $("regexSubstituteRegex").value : 0,
+      minDepth: $("regexMinDepth") ? $("regexMinDepth").value : null,
+      maxDepth: $("regexMaxDepth") ? $("regexMaxDepth").value : null
+    });
+  }
+  function setRegexEditorData(data) {
+    const d = normalizeRegexData(data);
+    $("regexScriptName").value = d.scriptName;
+    $("regexFind").value = d.findRegex;
+    $("regexReplace").value = d.replaceString;
+    $("regexSample").value = d.sampleText;
+    updateRegexSampleHighlight();
+    $("regexGlobal").checked = d.global;
+    $("regexMarkdownOnly").checked = d.markdownOnly;
+    $("regexPromptOnly").checked = d.promptOnly;
+    $("regexRunOnEdit").checked = d.runOnEdit;
+    $("regexDisabled").checked = d.disabled;
+    document.querySelectorAll("[data-regex-placement]").forEach((input) => {
+      input.checked = d.placement.includes(Number(input.dataset.regexPlacement));
+    });
+    $("regexSubstituteRegex").value = String(d.substituteRegex);
+    $("regexMinDepth").value = d.minDepth == null ? "" : String(d.minDepth);
+    $("regexMaxDepth").value = d.maxDepth == null ? "" : String(d.maxDepth);
+    $("regexTrimStrings").value = d.trimStrings.join("\n");
+  }
+  function regexFileBaseName(name) {
+    const base = String(name || "sillytavern-regex").replace(/\.json$/i, "").replace(/[\\/:*?"<>|]+/g, "_").trim();
+    return (base || "sillytavern-regex").slice(0, 80);
+  }
+  function regexSourceSummary(n) {
+    const d = normalizeRegexData(n && n.data ? n.data : {});
+    const name = (d.scriptName || "").trim();
+    if (name) return name.slice(0, 60);
+    const first = String(d.findRegex || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+    return first ? first.slice(0, 60) : "";
+  }
+  function regexEscapeLiteral(text) { return String(text || "").replace(/[\\^$.*+?()[\]{}|]/g, "\\$&"); }
+  function regexFlexibleLiteral(text) {
+    let out = "";
+    for (const ch of String(text || "")) {
+      if (/\s/.test(ch)) out += "\\s*";
+      else if (ch === ",") out += "\\s*,\\s*";
+      else if (ch === "|") out += "\\s*\\|\\s*";
+      else if (ch === ":") out += "\\s*:\\s*";
+      else if (ch === "-") out += "\\s*-\\s*";
+      else if (ch === "/") out += "\\s*\\/\\s*";
+      else out += regexEscapeLiteral(ch);
+    }
+    return out.replace(/(?:\\s\*){2,}/g, "\\s*");
+  }
+  function regexPatternFromMarkedSample(sample) {
+    const raw = String(sample || "");
+    const token = /(\[\[[\s\S]*?\]\]|\{\{[\s\S]*?\}\})/g;
+    let index = 0, pattern = "", plain = "", captures = 0, match;
+    const addFixed = (value) => { if (!value) return; pattern += regexFlexibleLiteral(value); plain += value; };
+    while ((match = token.exec(raw))) {
+      addFixed(raw.slice(index, match.index));
+      const text = match[0], inner = text.slice(2, -2);
+      if (text.startsWith("[[")) { pattern += "\\s*([\\s\\S]+?)\\s*"; plain += inner; captures++; }
+      else addFixed(inner);
+      index = match.index + text.length;
+    }
+    addFixed(raw.slice(index));
+    return { pattern, plain, captures };
+  }
+  function regexPlainSampleText(sample) {
+    return String(sample || "")
+      .replace(/\[\[([\s\S]*?)\]\]/g, "$1")
+      .replace(/\{\{([\s\S]*?)\}\}/g, "$1");
+  }
+  function regexSkipGroup(source, start) {
+    let depth = 0, escaped = false, inClass = false;
+    for (let i = start; i < source.length; i++) {
+      const ch = source[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === "[") { inClass = true; continue; }
+      if (ch === "]") { inClass = false; continue; }
+      if (inClass) continue;
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return start;
+  }
+  function regexSkipQuantifier(source, index) {
+    let i = index + 1;
+    if ("?*+".includes(source[i])) return i;
+    if (source[i] === "{") {
+      while (i < source.length && source[i] !== "}") i++;
+      return Math.min(i, source.length - 1);
+    }
+    return index;
+  }
+  function regexSampleValue(index) {
+    const n = Math.max(1, Number(index) || 1);
+    return String(n);
+  }
+  function regexSampleFromPattern(source, replaceString) {
+    const needed = Math.max(regexCountCaptures(source), regexMaxReplacementIndex(replaceString), 1);
+    let out = "", capture = 0, escaped = false, inClass = false;
+    const text = String(source || "").replace(/^\^/, "").replace(/\$$/, "");
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (escaped) {
+        escaped = false;
+        if (ch === "n") out += "\n";
+        else if (ch === "t") out += "\t";
+        else if (ch === "r") out += "";
+        else if (ch === "s") out += " ";
+        else if (ch === "d") out += "1";
+        else if (ch === "w") out += "A";
+        else out += ch;
+        continue;
+      }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === "[") {
+        inClass = true;
+        while (i < text.length && text[i] !== "]") i++;
+        inClass = false;
+        out += regexSampleValue(Math.min(capture + 1, needed));
+        i = regexSkipQuantifier(text, i);
+        continue;
+      }
+      if (inClass) { if (ch === "]") inClass = false; continue; }
+      if (ch === "(") {
+        const nonCapture = text[i + 1] === "?" && !(text[i + 2] === "<" && text[i + 3] !== "=" && text[i + 3] !== "!");
+        const end = regexSkipGroup(text, i);
+        if (!nonCapture) { capture++; out += regexSampleValue(capture); }
+        i = regexSkipQuantifier(text, end);
+        continue;
+      }
+      if ("?*+{}".includes(ch)) continue;
+      if (ch === ".") { out += regexSampleValue(Math.min(capture + 1, needed)); continue; }
+      if (ch === "|") { out += " "; continue; }
+      out += ch;
+    }
+    return out.replace(/[ \t]{2,}/g, " ").replace(/\n\s+/g, "\n").trim() || regexSampleValue(1);
+  }
+  function regexValidationState(data) {
+    const parsed = regexParseFind(data.findRegex);
+    if (!parsed.ok) return Object.assign(parsed, { captureCount: 0, replacementMax: regexMaxReplacementIndex(data.replaceString) });
+    return Object.assign(parsed, {
+      captureCount: regexCountCaptures(parsed.source),
+      replacementMax: regexMaxReplacementIndex(data.replaceString)
+    });
+  }
+  function updateRegexMeta(data, validation) {
+    const sourceChars = String(data.findRegex || "").length + String(data.replaceString || "").length;
+    $("regexMeta").textContent = `${sourceChars.toLocaleString("ko-KR")}자 · ${validation.captureCount || 0}캡처`;
+    const v = $("regexValidation");
+    v.classList.toggle("ok", !!validation.ok);
+    v.classList.toggle("bad", !validation.ok);
+    v.textContent = validation.ok
+      ? `정상 · ${validation.captureCount}캡처`
+      : validation.error;
+  }
+  function regexPreviewFallback(message) {
+    return `<!doctype html><meta charset="utf-8"><style>body{margin:0;padding:18px;background:#101622;color:#dbeaff;font:13px/1.7 -apple-system,BlinkMacSystemFont,'Noto Sans KR',sans-serif}</style><body>${esc(message)}</body>`;
+  }
+  function refreshRegexPreview() {
+    const frame = $("regexPreview"); if (!frame) return;
+    const data = regexDataFromEditor();
+    const previewSample = regexPlainSampleText(data.sampleText);
+    const validation = regexValidationState(data);
+    updateRegexMeta(data, validation);
+    const badge = $("regexPreviewBadge"), status = $("regexPreviewStatus"), captures = $("regexCaptures");
+    captures.innerHTML = "";
+    if (!validation.ok) {
+      badge.className = "regex-status bad"; badge.textContent = "검증 실패";
+      status.textContent = validation.error;
+      frame.srcdoc = regexPreviewFallback(validation.error);
+      return;
+    }
+    if (!data.replaceString.trim() || !previewSample.trim()) {
+      badge.className = "regex-status"; badge.textContent = "미리보기 대기";
+      status.textContent = "IN, OUT, sample을 채우면 결과가 표시됩니다.";
+      frame.srcdoc = regexPreviewFallback("미리보기 대기 중");
+      return;
+    }
+    let matchCount = 0, first = null, replaced = "";
+    try {
+      const flags = validation.flags.includes("g") ? validation.flags : regexUniqueFlags(validation.flags + "g");
+      const counter = new RegExp(validation.source, flags);
+      let match, guard = 0;
+      while ((match = counter.exec(previewSample)) && guard < 500) {
+        if (!first) first = match;
+        matchCount++; guard++;
+        if (match[0] === "") counter.lastIndex++;
+      }
+      const runner = new RegExp(validation.source, validation.flags);
+      replaced = previewSample.replace(runner, data.replaceString);
+    } catch (error) {
+      const msg = error && error.message ? error.message : "미리보기를 만들지 못했습니다.";
+      badge.className = "regex-status bad"; badge.textContent = "미리보기 실패";
+      status.textContent = msg;
+      frame.srcdoc = regexPreviewFallback(msg);
+      return;
+    }
+    const matchLabel = matchCount === 1 ? "매치" : `${matchCount}개 매치`;
+    badge.className = matchCount ? "regex-status ok" : "regex-status bad";
+    badge.textContent = matchCount ? matchLabel : "매치 없음";
+    status.textContent = matchCount
+      ? `${matchLabel} · OUT HTML을 샌드박스에서 렌더링했습니다.`
+      : "샘플에서 일치하는 범위를 찾지 못했습니다.";
+    if (first && first.length > 1) {
+      captures.innerHTML = first.slice(1).map((value, index) => `<div class="regex-capture-row"><b>$${index + 1}</b><span>${esc(value == null ? "" : String(value))}</span></div>`).join("");
+    }
+    frame.srcdoc = buildSandboxPreview(replaced);
+  }
+  let regexWorkshopSession = null, regexPreviewTimer = null, regexViewMode = "edit";
+  function setRegexSaver(mode) {
+    const s = $("regexSaver"); if (!s) return;
+    s.className = "saver " + mode;
+    $("regexSaverText").textContent = mode === "dirty" ? "기록 중" : mode === "saved" ? "저장됨" : "";
+    if (mode === "saved") setTimeout(() => { if (s.classList.contains("saved")) { s.className = "saver"; $("regexSaverText").textContent = ""; } }, 1500);
+  }
+  function queueRegexPreview() {
+    clearTimeout(regexPreviewTimer);
+    regexPreviewTimer = setTimeout(refreshRegexPreview, 180);
+  }
+  function setRegexView(mode) {
+    const screen = $("screen-regex");
+    const allowed = (mode === "preview" || mode === "split") ? mode : "edit";
+    regexViewMode = allowed; screen.dataset.regexView = allowed;
+    $("regexModeEdit").classList.toggle("active", allowed === "edit");
+    $("regexModePreview").classList.toggle("active", allowed === "preview");
+    $("regexModeSplit").classList.toggle("active", allowed === "split");
+    if (allowed !== "edit") refreshRegexPreview();
+  }
+  function beginRegexWorkshopSession(n) {
+    const data = normalizeRegexData(n.data || {});
+    const same = regexWorkshopSession && regexWorkshopSession.active && regexWorkshopSession.noteId === n.id;
+    if (!same) {
+      clearTimeout(st.saveTimer); st.saveTimer = null;
+      regexWorkshopSession = { noteId: n.id, active: true, dirty: false, revision: 0, lastQueuedRevision: -1, inFlight: Promise.resolve() };
+      setRegexEditorData(data);
+      refreshRegexPreview();
+      setRegexView(regexViewMode);
+    } else if (!regexWorkshopSession.dirty && !jsonSame(regexDataFromEditor(), data)) {
+      setRegexEditorData(data); refreshRegexPreview();
+    }
+  }
+  function activeRegexSession(expectedId) {
+    const session = regexWorkshopSession;
+    if (!session || !session.active || !session.noteId) return null;
+    if (expectedId && session.noteId !== expectedId) return null;
+    if (st.curNoteId !== session.noteId) return null;
+    return session;
+  }
+  function scheduleRegexSave() {
+    const session = activeRegexSession();
+    if (!session || curView().s !== "regex") return;
+    const n = getNote(session.noteId); if (!n || n.type !== "regex") return;
+    const literal = regexSplitLiteral($("regexFind").value);
+    if (literal && !literal.unclosed) $("regexGlobal").checked = /g/.test(literal.flags);
+    session.dirty = true; session.revision += 1;
+    const draft = regexDraftFromEditor();
+    writeDraft(n, "regex", draft); queueRegexPreview();
+    setRegexSaver("dirty"); clearTimeout(st.saveTimer);
+    const id = session.noteId, revision = session.revision;
+    st.saveTimer = setTimeout(() => {
+      if (activeRegexSession(id) === session && session.revision >= revision) void flushRegexSave(false, id);
+    }, 550);
+  }
+  function flushRegexSave(silent, expectedId) {
+    clearTimeout(st.saveTimer); st.saveTimer = null;
+    const session = activeRegexSession(expectedId);
+    if (!session || !session.dirty) return session && session.inFlight ? session.inFlight : Promise.resolve();
+    const noteId = session.noteId, n = getNote(noteId);
+    if (!n || n.type !== "regex") return Promise.resolve();
+    const draft = regexDraftFromEditor(), revision = session.revision;
+    if (session.lastQueuedRevision === revision) return session.inFlight || Promise.resolve();
+    session.lastQueuedRevision = revision;
+    const write = async () => {
+      const note = getNote(noteId); if (!note || note.type !== "regex") return;
+      if (jsonSame(normalizeRegexData(note.data || {}), draft)) {
+        if (regexWorkshopSession === session && session.revision === revision) { session.dirty = false; clearDraftIfSynced(note, "regex", draft); }
+        return;
+      }
+      note.data = normalizeRegexData(draft);
+      if (!note.titleLocked && note.data.scriptName.trim()) note.title = note.data.scriptName.trim().slice(0, 80);
+      await saveNote(note);
+      if (regexWorkshopSession === session && session.revision === revision) {
+        session.dirty = false; clearDraftIfSynced(note, "regex", draft); if (!silent) setRegexSaver("saved");
+      }
+    };
+    session.inFlight = (session.inFlight || Promise.resolve()).then(write, write);
+    return session.inFlight;
+  }
+  async function leaveRegexWorkshop() {
+    const session = regexWorkshopSession;
+    if (!session || !session.active) return;
+    await flushRegexSave(true, session.noteId);
+    if (regexWorkshopSession === session) {
+      session.active = false; session.noteId = null; session.dirty = false;
+      clearTimeout(st.saveTimer); st.saveTimer = null; clearTimeout(regexPreviewTimer);
+    }
+  }
+  function renderRegexWorkshop() {
+    const n = getNote(st.curNoteId);
+    if (!n || n.type !== "regex") { back(); return; }
+    beginRegexWorkshopSession(n);
+    $("regexTitle").textContent = n.title || "정규식 작업실";
+    setRegexSaver(""); queueDraftRecovery(n, "regex");
+  }
+  function regexBuildExportPayload(id) {
+    const n = getNote(id); if (!n || n.type !== "regex") return null;
+    const data = normalizeRegexData((activeRegexSession(id) && $("regexFind")) ? regexDataFromEditor() : (n.data || {}));
+    return {
+      id: data.id || n.id,
+      scriptName: data.scriptName || n.title || "Lumink Regex",
+      findRegex: regexSetGlobalInFind(data.findRegex, data.global),
+      replaceString: data.replaceString,
+      trimStrings: data.trimStrings,
+      placement: data.placement,
+      disabled: data.disabled,
+      markdownOnly: data.markdownOnly,
+      promptOnly: data.promptOnly,
+      runOnEdit: data.runOnEdit,
+      substituteRegex: data.substituteRegex,
+      minDepth: data.minDepth,
+      maxDepth: data.maxDepth
+    };
+  }
+  async function exportRegexJson(id) {
+    const n = getNote(id); if (!n || n.type !== "regex") return;
+    await flushRegexSave(true, id);
+    const payload = regexBuildExportPayload(id);
+    const check = regexParseFind(payload.findRegex);
+    if (!check.ok) { toast(check.error); return; }
+    const json = JSON.stringify(payload, null, 4).replace(/</g, "\\u003c");
+    downloadDoc(json, `${regexFileBaseName(payload.scriptName || n.title)}.json`, "application/json");
+    toast("SillyTavern JSON을 저장했어요");
+  }
+  function openRegexSheet(n) {
+    openSheet(n.title, [
+      { icon: IC.pin, label: n.pinned ? "고정 해제" : "상단 고정", fn: () => togglePinNote(n.id) },
+      { icon: IC.rename, label: "이름 바꾸기", fn: () => renameModal("정규식 작업실 이름", n.title, async (v) => { if (v) { n.title = v; n.titleLocked = true; await saveNote(n); render(); } }) },
+      { icon: IC.color, label: "색상 지정", fn: () => showChipPicker(n.id) },
+      { icon: IC.save, label: "SillyTavern JSON 내보내기", fn: () => void exportRegexJson(n.id) },
+      { icon: IC.move, label: "다른 프로젝트로 이동", fn: () => pickTargetProject(n.projectId, (pid) => moveNote(n.id, pid).then(render)) },
+      { icon: IC.copy, label: "선택 위치로 복제", fn: () => pickTargetProject(n.projectId, (pid) => duplicateNote(n.id, pid).then(render)) },
+      { icon: IC.del, label: "삭제", danger: true, fn: () => confirmModal("정규식 작업실 삭제", `'${n.title}'를 삭제할까요?`, "삭제", true, async () => { await deleteNote(n.id); back(); }) }
+    ]);
+  }
+  // Regex OUT template UI is intentionally hidden for now.
+  // Keep these builders so the template feature can be restored later without rebuilding the designs.
+  function regexStatusTemplate(count) {
+    const rows = Array.from({ length: count }, (_, i) => `<div class="li-rx-stat"><span>항목 ${i + 1}</span><b>$${i + 1}</b></div>`).join("");
+    return `<div class="li-rx-status"><style>.li-rx-status{max-width:620px;margin:16px auto;padding:18px;border:1px solid rgba(74,209,167,.35);border-radius:14px;background:linear-gradient(180deg,#10213a,#0d1728);color:#edf8ff;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans KR',sans-serif;box-shadow:0 16px 40px rgba(0,0,0,.28)}.li-rx-status h3{margin:0 0 14px;font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:#91ffe0}.li-rx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}.li-rx-stat{padding:10px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}.li-rx-stat span{display:block;font-size:11px;color:#9bb2c8}.li-rx-stat b{display:block;margin-top:3px;font-size:18px;color:#fff;word-break:break-word}</style><h3>Status</h3><div class="li-rx-grid">${rows}</div></div>`;
+  }
+  function regexAlertTemplate(count) {
+    const rows = Array.from({ length: count }, (_, i) => `<li><span>$${i + 1}</span></li>`).join("");
+    return `<div class="li-rx-alert"><style>.li-rx-alert{max-width:520px;margin:18px auto;padding:16px 18px;border-radius:12px;background:#fff7e6;border:1px solid #f0c978;color:#3f2c0b;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans KR',sans-serif;box-shadow:0 10px 26px rgba(104,72,20,.16)}.li-rx-alert strong{display:block;margin-bottom:9px;font-size:14px;color:#7a4c00}.li-rx-alert ul{margin:0;padding-left:18px}.li-rx-alert li{margin:6px 0}.li-rx-alert span{white-space:pre-wrap;overflow-wrap:anywhere}</style><strong>Notice</strong><ul>${rows}</ul></div>`;
+  }
+  function regexMessageTemplate(count) {
+    const rows = Array.from({ length: count }, (_, i) => `<p>$${i + 1}</p>`).join("");
+    return `<div class="li-rx-msg"><style>.li-rx-msg{max-width:560px;margin:16px auto;padding:16px;border-radius:14px;background:#f2f7fb;color:#223044;font-family:-apple-system,BlinkMacSystemFont,'Noto Sans KR',sans-serif}.li-rx-msg .bubble{padding:12px 14px;border-radius:12px;background:#fff;border:1px solid #dbe7f2;box-shadow:0 8px 18px rgba(39,64,91,.12)}.li-rx-msg p{margin:.35em 0;white-space:pre-wrap;overflow-wrap:anywhere}</style><div class="bubble">${rows}</div></div>`;
+  }
+  function openRegexTemplatePicker() {
+    let selected = "status";
+    const maxByType = { status: 20, alert: 10, message: 5 };
+    const labelByType = { status: "상태창", alert: "알림창", message: "메시지창" };
+    const renderChoice = (type, desc) => `<button type="button" class="type-card regex-template-choice ${selected === type ? "is-selected" : ""}" data-regex-template="${type}"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M8 17h7"/></svg></div><div><div class="tc-name">${labelByType[type]}</div><div class="tc-desc">${desc}</div></div><span class="tc-soon">${selected === type ? "선택됨" : "선택"}</span></button>`;
+    const draw = () => {
+      $("modalBox").querySelectorAll("[data-regex-template]").forEach((el) => {
+        const on = el.dataset.regexTemplate === selected;
+        el.classList.toggle("is-selected", on);
+        const chip = el.querySelector(".tc-soon"); if (chip) chip.textContent = on ? "선택됨" : "선택";
+      });
+      const input = $("regexTemplateCount"); if (input) { input.max = String(maxByType[selected]); if (Number(input.value) > maxByType[selected]) input.value = String(maxByType[selected]); }
+    };
+    openModal(`<h3>OUT 템플릿</h3><p class="m-sub">디자인을 고른 뒤 사용할 $n 개수를 정하세요.</p>
+      ${renderChoice("status", "$1~$20 상태 항목")}
+      ${renderChoice("alert", "$1~$10 알림 항목")}
+      ${renderChoice("message", "$1~$5 메시지 문단")}
+      <div class="m-field-label">$n 개수</div><input class="m-input" id="regexTemplateCount" type="number" min="1" max="20" value="6" inputmode="numeric">
+      <div class="m-row"><button class="m-btn" id="regexTemplateCancel">취소</button><button class="m-btn primary" id="regexTemplateApply">적용</button></div>`);
+    $("modalBox").querySelectorAll("[data-regex-template]").forEach((el) => el.addEventListener("click", () => { selected = el.dataset.regexTemplate; draw(); }));
+    $on("regexTemplateCancel", "click", closeModal);
+    $on("regexTemplateApply", "click", () => {
+      const max = maxByType[selected], count = Math.max(1, Math.min(max, Number($("regexTemplateCount").value) || 1));
+      const html = selected === "status" ? regexStatusTemplate(count) : selected === "alert" ? regexAlertTemplate(count) : regexMessageTemplate(count);
+      $("regexReplace").value = html;
+      closeModal(); scheduleRegexSave(); setRegexView("split"); toast(`${labelByType[selected]} 템플릿을 OUT에 적용했어요`);
+    });
+    draw();
+  }
+  function applyRegexFromSample() {
+    const sample = $("regexSample").value;
+    if (!sample.trim()) { toast("샘플을 먼저 입력해 주세요"); return; }
+    const built = regexPatternFromMarkedSample(sample);
+    $("regexFind").value = regexSetGlobalInFind(built.pattern, $("regexGlobal").checked);
+    updateRegexSampleHighlight();
+    scheduleRegexSave();
+    toast(`IN 정규식을 만들었어요 · ${built.captures}캡처`);
+  }
+  function applyRegexAutoSample() {
+    const data = regexDataFromEditor(), parsed = regexParseFind(data.findRegex);
+    if (!parsed.ok) { toast("올바른 IN 정규식을 먼저 입력해 주세요"); return; }
+    $("regexSample").value = regexSampleFromPattern(parsed.source, data.replaceString);
+    updateRegexSampleHighlight();
+    scheduleRegexSave();
+    toast("샘플을 자동 작성했어요");
   }
 
   /* ---------- free-memo editor ---------- */
@@ -2740,6 +3594,76 @@
   function riskyLogPattern(pattern) {
     return pattern.length > 300 || /(\([^)]*[+*][^)]*\))[+*{]/.test(pattern) || /(\.\*){2,}|(\.\+){2,}/.test(pattern) || /\\[1-9]/.test(pattern);
   }
+  const LOG_NAME_DESIGN_COUNT = 5;
+  const LOG_NAME_DESIGN_LABELS = ["솔리드 칩", "아웃라인", "언더라인", "소프트 틴트", "마커 하이라이트"];
+  function logColorClamp(n) { return Math.max(0, Math.min(255, Math.round(Number(n) || 0))); }
+  function logParseColor(input) {
+    if (typeof input !== "string") return null;
+    let s = input.trim().toLowerCase();
+    if (!s) return null;
+    if (s[0] === "#") {
+      if (/^#[0-9a-f]{3}$/.test(s)) s = "#" + s.slice(1).split("").map((c) => c + c).join("");
+      if (/^#[0-9a-f]{6}$/.test(s)) return { r: parseInt(s.slice(1, 3), 16), g: parseInt(s.slice(3, 5), 16), b: parseInt(s.slice(5, 7), 16), a: 1 };
+      return null;
+    }
+    const m = s.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
+    if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
+    if (s === "white") return { r: 255, g: 255, b: 255, a: 1 };
+    if (s === "black") return { r: 0, g: 0, b: 0, a: 1 };
+    if (s === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
+    return null;
+  }
+  function logHexStr(c) { return "#" + [c.r, c.g, c.b].map((n) => logColorClamp(n).toString(16).padStart(2, "0")).join(""); }
+  function logRgbaStr(c, a) {
+    const alpha = Math.max(0, Math.min(1, a));
+    return `rgba(${logColorClamp(c.r)},${logColorClamp(c.g)},${logColorClamp(c.b)},${(+alpha.toFixed(3))})`;
+  }
+  function logMixColor(a, b, t) { return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: 1 }; }
+  function logLuminance(c) { return (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255; }
+  // 이름 표시 디자인 1종(기존 persona.style)에서 5종 변주를 자동 생성합니다.
+  // 칩 → 아웃라인 → 언더라인 → 소프트 틴트 → 마커 하이라이트.
+  function deriveNameDesigns(baseStyle) {
+    const base = cleanLogStyle(baseStyle);
+    const radius = base["border-radius"] || "999px";
+    const softRadius = radius === "999px" ? "7px" : radius;
+    const weight = base["font-weight"] || "800";
+    const spacing = base["letter-spacing"];
+    const family = base["font-family"];
+    const fill = logParseColor(base["background-color"]) || logParseColor(base["background"]);
+    const text = logParseColor(base["color"]);
+    const accent = (fill && fill.a > 0 ? fill : null) || text || logParseColor("#5967bd");
+    const light = logLuminance(accent) > 0.62;
+    const onAccent = (fill && fill.a > 0 ? (text || (light ? logParseColor("#1b2233") : logParseColor("#ffffff"))) : (light ? logParseColor("#1b2233") : logParseColor("#ffffff")));
+    const accentDeep = light ? logMixColor(accent, { r: 0, g: 0, b: 0 }, 0.4) : accent;
+    const common = (o) => { const s = Object.assign({}, o); if (spacing) s["letter-spacing"] = spacing; if (family) s["font-family"] = family; return s; };
+    const chip = (fill && fill.a > 0) ? common(Object.assign({}, base)) : common({ "color": logHexStr(onAccent), "background-color": logHexStr(accent), "border-radius": radius, "padding": base["padding"] || "1px 8px", "font-weight": weight });
+    const outline = common({ "color": logHexStr(accentDeep), "background-color": "transparent", "border": `1.5px solid ${logRgbaStr(accent, 0.85)}`, "border-radius": radius, "padding": "0 7px", "font-weight": weight });
+    const underline = common({ "color": logHexStr(accentDeep), "border-bottom": `2px solid ${logRgbaStr(accent, 0.9)}`, "padding": "0 1px 1px", "font-weight": weight });
+    const tint = common({ "color": logHexStr(accentDeep), "background-color": logRgbaStr(accent, 0.16), "border-radius": softRadius, "padding": "1px 7px", "font-weight": weight });
+    const marker = common({ "color": logHexStr(accentDeep), "background": `linear-gradient(to top, ${logRgbaStr(accent, 0.42)} 42%, transparent 42%)`, "padding": "0 3px", "font-weight": weight });
+    return [chip, outline, underline, tint, marker].map((style, i) => ({ label: LOG_NAME_DESIGN_LABELS[i], style: cleanLogStyle(style) }));
+  }
+  function normalizeLogPersona(rawPersona) {
+    const p = rawPersona && typeof rawPersona === "object" ? rawPersona : {};
+    const maskText = cleanImportedText(p.maskText, 80) || "•••";
+    const baseStyle = cleanLogStyle(p.style);
+    let designs = [];
+    if (Array.isArray(p.designs) && p.designs.length) {
+      designs = p.designs.slice(0, LOG_NAME_DESIGN_COUNT).map((d, i) => ({
+        label: cleanImportedText(d && d.label, 40) || LOG_NAME_DESIGN_LABELS[i] || `디자인 ${i + 1}`,
+        style: cleanLogStyle(d && d.style)
+      })).filter((d) => Object.keys(d.style).length);
+    }
+    if (!designs.length) {
+      designs = deriveNameDesigns(baseStyle);
+      if (Object.keys(baseStyle).length) designs[0] = { label: LOG_NAME_DESIGN_LABELS[0], style: baseStyle };
+    } else if (designs.length < LOG_NAME_DESIGN_COUNT) {
+      const derived = deriveNameDesigns(designs[0].style);
+      for (let i = designs.length; i < LOG_NAME_DESIGN_COUNT; i++) designs[i] = derived[i];
+    }
+    designs = designs.slice(0, LOG_NAME_DESIGN_COUNT).map((d, i) => ({ label: d.label || LOG_NAME_DESIGN_LABELS[i], style: d.style }));
+    return { maskText, designs, style: designs[0].style };
+  }
   function normalizeLogTemplate(raw) {
     if (!raw || raw.kind !== "lumink-log-template" || Number(raw.schemaVersion) !== 1) throw new Error("루미잉크 로그 템플릿 v1 형식이 아니에요");
     const id = String(raw.id || "").trim();
@@ -2758,12 +3682,11 @@
         stripDelimiters: !!rule.stripDelimiters, style: cleanLogStyle(rule.style)
       };
     });
-    const persona = raw.persona && typeof raw.persona === "object" ? raw.persona : {};
     return {
       kind: "lumink-log-template", schemaVersion: 1, id,
       name: cleanImportedText(raw.name, 100) || id,
       description: cleanImportedText(raw.description, 300), author: cleanImportedText(raw.author, 100),
-      styles, rules, persona: { maskText: cleanImportedText(persona.maskText, 80) || "•••", style: cleanLogStyle(persona.style) }
+      styles, rules, persona: normalizeLogPersona(raw.persona)
     };
   }
   function builtInLogTemplates() {
@@ -2827,7 +3750,8 @@
     const sourceNames = Array.isArray(src.names) ? src.names : (Array.isArray(src.personaNames) ? src.personaNames : []);
     const names = [...new Set(sourceNames.map((name) => cleanImportedText(String(name || ""), 80).trim()).filter(Boolean))].slice(0, LOG_NAME_SET_LIMIT);
     const replacement = cleanImportedText(src.replacement != null ? src.replacement : src.alias, 80).trim();
-    return { names, replacement };
+    const design = Math.max(0, Math.min(LOG_NAME_DESIGN_COUNT - 1, Math.floor(Number(src.design)) || 0));
+    return { names, replacement, design };
   }
   function normalizeLogNameSets(rawSets, legacyNames, legacyAlias) {
     const source = Array.isArray(rawSets) ? rawSets : [];
@@ -2847,7 +3771,7 @@
         if (!key || used.has(key)) return;
         used.add(key); names.push(String(name || "").trim());
       });
-      return { names, replacement: set.replacement || "" };
+      return { names, replacement: set.replacement || "", design: set.design || 0 };
     });
   }
   function logNameSetCount(sets) {
@@ -2915,12 +3839,16 @@
     return out;
   }
   function applyLogNameSets(segments, template, data) {
-    const fallback = (template.persona.maskText || "•••").trim();
+    const persona = template.persona || {};
+    const designs = (Array.isArray(persona.designs) && persona.designs.length) ? persona.designs : [{ style: persona.style || {} }];
+    const fallback = (persona.maskText || "•••").trim();
     normalizeLogNameSets(data && data.nameSets, data && data.personaNames, data && data.personaAlias).forEach((set) => {
       const replacement = (set.replacement || fallback).trim();
       if (!set.names.length || !replacement) return;
+      const design = designs[Math.max(0, Math.min(designs.length - 1, set.design || 0))] || designs[0];
+      const style = (design && design.style) || {};
       [...set.names].sort((a, b) => String(b).length - String(a).length).forEach((name) => {
-        segments = applyPersonaMask(segments, String(name || "").trim(), replacement, template.persona.style);
+        segments = applyPersonaMask(segments, String(name || "").trim(), replacement, style);
       });
     });
     return segments;
@@ -2998,6 +3926,34 @@
       const nextHost = $("logSetNames"); if (nextHost) nextHost.dispatchEvent(new Event("input", { bubbles:true }));
     }));
   }
+  // 이름 치환 디자인은 이름 자체가 아니라, 다섯 가지 표시 스타일의 차이를 빠르게 비교하는 용도입니다.
+  // 따라서 어떤 세트에서도 같은 샘플 텍스트를 사용합니다.
+  function logSetDesignSample() { return "미리보기"; }
+  function logSetSelectedDesign() {
+    const host = $("logSetDesigns");
+    return host ? Math.max(0, Math.min(LOG_NAME_DESIGN_COUNT - 1, Number(host.dataset.selected) || 0)) : 0;
+  }
+  function renderLogSetDesigns(template, selected) {
+    const host = $("logSetDesigns"); if (!host) return;
+    const designs = (template && template.persona && template.persona.designs) || [];
+    const canvas = (template && template.styles && template.styles.canvas) || {};
+    const canvasBg = canvas["background"] || canvas["background-color"] || "#ffffff";
+    const sample = esc(logSetDesignSample());
+    const safeSelected = Math.max(0, Math.min(Math.max(0, designs.length - 1), Number(selected) || 0));
+    host.dataset.selected = String(safeSelected);
+    host.setAttribute("aria-label", "이름 표시 디자인 미리보기 5종");
+    host.innerHTML = designs.slice(0, LOG_NAME_DESIGN_COUNT).map((d, index) => {
+      const styleAttr = esc(logStyleAttr(d.style));
+      const active = index === safeSelected ? " is-active" : "";
+      return `<button type="button" class="log-set-design${active}" data-log-set-design="${index}" aria-pressed="${index === safeSelected ? "true" : "false"}" aria-label="미리보기 ${index + 1}" title="미리보기 ${index + 1}"><span class="log-set-design-chip" style="background:${esc(canvasBg)}"><span style="${styleAttr}">${sample}</span></span></button>`;
+    }).join("");
+    host.querySelectorAll("[data-log-set-design]").forEach((button) => button.addEventListener("click", () => {
+      host.dataset.selected = button.dataset.logSetDesign;
+      host.querySelectorAll(".log-set-design").forEach((element) => {
+        const on = element === button; element.classList.toggle("is-active", on); element.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    }));
+  }
   async function saveLogNameSet(index, draft) {
     const n=getNote(st.curNoteId); if(!n||n.type!=="log")return false;
     const safeIndex=Math.max(0,Math.min(LOG_NAME_SET_COUNT-1,Number(index)||0));
@@ -3015,8 +3971,10 @@
     const safeIndex = Math.max(0, Math.min(LOG_NAME_SET_COUNT - 1, Number(index) || 0));
     const sets = normalizeLogNameSets(n.data && n.data.nameSets, n.data && n.data.personaNames, n.data && n.data.personaAlias);
     const current = normalizeLogNameSet(seed || sets[safeIndex]);
-    openModal(`<h3>이름 치환 세트 ${safeIndex + 1}</h3><p class="m-sub">원본 이름은 최대 20개까지 묶을 수 있습니다. 이 세트의 원본 이름은 모두 아래 “바꿀 이름”으로 표시되고, 다섯 세트 모두 현재 로그 템플릿의 정규식 스타일 규칙을 함께 적용합니다. 원본 이름은 다른 세트와 중복 저장할 수 없습니다.</p><div class="m-field-label">바꿀 이름</div><input class="m-input" id="logSetReplacement" maxlength="80" value="${esc(current.replacement)}" placeholder="예: {{user}} 또는 주인공"><div class="log-set-modal-head"><span class="m-field-label">원본 이름</span><span id="logSetNameCount">${current.names.length}/${LOG_NAME_SET_LIMIT}</span></div><div class="log-set-name-list" id="logSetNames"></div><button class="m-btn log-set-add" id="logSetAdd" type="button">+ 원본 이름 추가</button><div id="logSetConflictHost"></div><div class="m-row"><button class="m-btn" id="logSetCancel">취소</button><button class="m-btn primary" id="logSetSave">세트 저장</button></div>`);
+    const template = getLogTemplate(n);
+    openModal(`<h3>이름 치환 세트 ${safeIndex + 1}</h3><p class="m-sub">원본 이름은 최대 20개까지 묶을 수 있어요. 등록한 이름은 모두 아래 “바꿀 이름”으로 치환되고, 아래에서 고른 이름 표시 디자인이 이 세트에 적용됩니다. 원본 이름은 다른 세트와 중복 저장할 수 없습니다.</p><div class="m-field-label">바꿀 이름</div><input class="m-input" id="logSetReplacement" maxlength="80" value="${esc(current.replacement)}" placeholder="예: {{user}} 또는 주인공"><div class="m-field-label">미리보기</div><div class="log-set-design-list" id="logSetDesigns"></div><div class="log-set-modal-head"><span class="m-field-label">원본 이름</span><span id="logSetNameCount">${current.names.length}/${LOG_NAME_SET_LIMIT}</span></div><div class="log-set-name-list" id="logSetNames"></div><button class="m-btn log-set-add" id="logSetAdd" type="button">+ 원본 이름 추가</button><div id="logSetConflictHost"></div><div class="m-row"><button class="m-btn" id="logSetCancel">취소</button><button class="m-btn primary" id="logSetSave">세트 저장</button></div>`);
     renderLogSetNames(current.names);
+    renderLogSetDesigns(template, current.design);
     const updateCount = () => { const label = $("logSetNameCount"); if (label) label.textContent = `${logSetNamesFromModal().length}/${LOG_NAME_SET_LIMIT}`; };
     const updateConflict = () => {
       const host = $("logSetConflictHost"); const saveButton = $("logSetSave"); if (!host || !saveButton) return [];
@@ -3046,8 +4004,9 @@
         return;
       }
       if (names.length && !replacement) { toast("바꿀 이름을 입력해 주세요"); $("logSetReplacement").focus(); return; }
-      await saveLogNameSet(safeIndex,{names,replacement});
+      await saveLogNameSet(safeIndex, { names, replacement, design: logSetSelectedDesign() });
     });
+    // 미리보기 문구는 모든 디자인에서 고정하므로, 이름 입력 중에는 선택 상태를 다시 그릴 필요가 없습니다.
     setTimeout(() => $("logSetReplacement").focus(), 80);
   }
   function renderLog() {
@@ -3174,7 +4133,7 @@
   function showLogTemplatePicker() {
     const n = getNote(st.curNoteId); if (!n || n.type !== "log") return;
     logTemplateTab = "builtin"; logTemplateQuery = ""; logTemplateSortAsc = true;
-    openModal(`<div class="log-template-manager"><h3>로그 디자인 템플릿</h3><p class="m-sub">템플릿을 길게 누르면 즐겨찾기 상단에 고정됩니다.</p><div class="log-template-tabs" role="tablist" aria-label="템플릿 구분"><button data-log-tab="builtin" role="tab">기본 <small></small></button><button data-log-tab="custom" role="tab">사용자 <small></small></button><button data-log-tab="favorite" role="tab">즐겨찾기 <small></small></button></div><div class="log-template-tools"><input class="m-input" id="logTemplateSearch" type="search" autocomplete="off" placeholder="템플릿 제목·내용 검색" value="${esc(logTemplateQuery)}"><button class="m-btn" id="logTemplateSort" type="button">이름순 ↑</button></div><div class="log-template-list" id="logTemplateList"></div><div class="log-template-actions"><button class="m-btn primary" id="logTemplateUpload">JSON 템플릿 업로드</button><a class="m-btn" href="./lumink-log-template-guide.md" download>제작 가이드 받기</a><a class="m-btn log-template-gallery-link" href="./lumink-log-templates-50.html" target="_blank" rel="noopener">50종 소개 보기</a></div><div class="m-row"><button class="m-btn" id="logTemplateClose">닫기</button></div></div>`);
+    openModal(`<div class="log-template-manager"><h3>로그 디자인 템플릿</h3><p class="m-sub">템플릿을 길게 누르면 즐겨찾기 상단에 고정됩니다.</p><div class="log-template-tabs" role="tablist" aria-label="템플릿 구분"><button data-log-tab="builtin" role="tab">기본 <small></small></button><button data-log-tab="custom" role="tab">사용자 <small></small></button><button data-log-tab="favorite" role="tab">즐겨찾기 <small></small></button></div><div class="log-template-tools"><input class="m-input" id="logTemplateSearch" type="search" autocomplete="off" placeholder="템플릿 제목·내용 검색" value="${esc(logTemplateQuery)}"><button class="m-btn" id="logTemplateSort" type="button">이름순 ↑</button></div><div class="log-template-list" id="logTemplateList"></div><div class="log-template-actions"><button class="m-btn primary" id="logTemplateUpload">JSON 템플릿 업로드</button><a class="m-btn" href="./lumink-log-template-guide.md" download>제작 가이드 받기</a><a class="m-btn log-template-gallery-link" href="./lumink-log-templates-100.html" target="_blank" rel="noopener">100종 소개 보기</a></div><div class="m-row"><button class="m-btn" id="logTemplateClose">닫기</button></div></div>`);
     $("modalBox").classList.add("log-template-modal");
     $("modalScrim").classList.add("log-template-open");
     const galleryLink = $("modalBox").querySelector(".log-template-gallery-link");
@@ -3212,6 +4171,123 @@
     const doc = `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="generator" content="Lumink"><meta name="lumink-kind" content="log"><title>${esc(n.title || "로그")}</title></head><body style="margin:0;padding:24px;background:#f4f5f8">${renderLogInlineHtml(n)}<script type="application/json" id="lumink-log">${payload}<\/script></body></html>`;
     downloadDoc(doc, `${((n.title || "log").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 50) || "log")}.html`, "text/html"); toast("꾸며진 로그 HTML을 저장했어요");
   }
+
+  const LOG_IMAGE_EXPORT_SIZES = [
+    { width: 520, name: "좁은 인용글", desc: "520px · 모바일 게시판과 짧은 인용 박스" },
+    { width: 680, name: "기본 게시판", desc: "680px · 일반 게시글용 권장 폭", recommended: true },
+    { width: 840, name: "넓은 게시글", desc: "840px · 데스크톱 게시판과 긴 문단" }
+  ];
+  function logImageFileStem(value) {
+    return (String(value || "log").replace(/[\\/:*?"<>|]+/g, "_").trim().slice(0, 80) || "log");
+  }
+  function downloadLogBlob(blob, name) {
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1600);
+  }
+  async function waitForLogPngAssets(root) {
+    const waits = [];
+    if (document.fonts && document.fonts.ready) waits.push(document.fonts.ready.catch(() => {}));
+    (root ? root.querySelectorAll("img") : []).forEach((img) => {
+      if (img.complete && img.naturalWidth) return;
+      waits.push(new Promise((resolve) => { img.addEventListener("load", resolve, { once:true }); img.addEventListener("error", resolve, { once:true }); }));
+    });
+    await Promise.all(waits);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+  function logPngCaptureScale(width, height) {
+    const desired = 2;
+    const maxSide = 8192;
+    const maxPixels = 30000000;
+    const bySide = maxSide / Math.max(1, width, height);
+    const byPixels = Math.sqrt(maxPixels / Math.max(1, width * height));
+    return Math.min(desired, bySide, byPixels);
+  }
+  async function exportLogPng(id, requestedWidth) {
+    if (st.curNoteId === id) await flushLog();
+    const n = getNote(id); if (!n || n.type !== "log") return;
+    if (!(n.data && String(n.data.content || "").trim())) { toast("이미지로 저장할 로그 원문을 입력해 주세요"); return; }
+    if (typeof window.html2canvas !== "function") { toast("PNG 캡처 도구를 불러오지 못했어요. 새로고침 후 다시 시도해 주세요."); return; }
+
+    const width = Math.max(400, Math.min(960, Math.round(Number(requestedWidth) || 680)));
+    const safePadding = 34;
+    const host = document.createElement("div");
+    host.className = "lumink-log-png-capture";
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = `position:fixed;left:-100000px;top:0;width:${width + safePadding * 2}px;box-sizing:border-box;padding:${safePadding}px;overflow:visible;pointer-events:none;z-index:-1;background:transparent;contain:layout paint style;`;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = renderLogInlineHtml(n);
+    const card = wrap.firstElementChild;
+    if (!card) { toast("꾸며진 로그를 준비하지 못했어요"); return; }
+    card.style.width = `${width}px`;
+    card.style.maxWidth = "none";
+    card.style.margin = "0";
+    card.style.boxSizing = "border-box";
+    host.appendChild(card);
+    document.body.appendChild(host);
+
+    try {
+      toast("꾸며진 로그 PNG를 준비하고 있어요");
+      await waitForLogPngAssets(host);
+      const box = host.getBoundingClientRect();
+      const captureWidth = Math.max(1, Math.ceil(Math.max(host.scrollWidth, box.width)));
+      const captureHeight = Math.max(1, Math.ceil(Math.max(host.scrollHeight, box.height)));
+      const scale = logPngCaptureScale(captureWidth, captureHeight);
+      if (!(scale >= 0.5)) throw new Error("로그가 너무 길어 한 장 PNG로 만들 수 없어요");
+      const bitmap = await captureHtml2CanvasSafe(host, {
+        backgroundColor: null,
+        scale,
+        logging: false,
+        useCORS: true,
+        allowTaint: false,
+        width: captureWidth,
+        height: captureHeight,
+        windowWidth: captureWidth,
+        windowHeight: captureHeight,
+        scrollX: 0,
+        scrollY: 0,
+        onclone: (doc, el) => {
+          const root = el || doc.body;
+          try { normalizeCloneColorFns(root); } catch (e) {}
+          try { rasterizeRepeatingGradients(root); } catch (e) {}
+          try { stripInsetShadows(root); } catch (e) {}
+        }
+      });
+      const png = await new Promise((resolve) => bitmap.toBlob(resolve, "image/png"));
+      if (!png) throw new Error("png encode failed");
+      downloadLogBlob(png, `${logImageFileStem(n.title)}-${width}px.png`);
+      const quality = scale >= 1.85 ? "2배 해상도" : `${Math.round(scale * 100)}% 해상도`;
+      toast(`꾸며진 로그 PNG를 저장했어요 · ${width}px · ${quality}`);
+    } catch (e) {
+      console.warn("log png export", e);
+      const message = (e && e.message) || "PNG 저장에 실패했어요";
+      toast(message.includes("너무 길어") ? `${message}. 로그를 나누거나 HTML로 저장해 주세요.` : "PNG 저장에 실패했어요. 글꼴 또는 템플릿을 다시 불러온 뒤 재시도해 주세요.", 3600);
+    } finally {
+      host.remove();
+    }
+  }
+  function openLogImageExportPicker(id) {
+    const n = getNote(id); if (!n || n.type !== "log") return;
+    let selected = 680;
+    const rows = LOG_IMAGE_EXPORT_SIZES.map((item) => `<button type="button" class="log-image-export-option${item.width === selected ? " is-selected" : ""}" data-log-image-width="${item.width}" aria-pressed="${item.width === selected ? "true" : "false"}"><span class="log-image-export-symbol">▣</span><span><b>${esc(item.name)}</b><small>${esc(item.desc)}</small></span>${item.recommended ? '<em>추천</em>' : ""}</button>`).join("");
+    openModal(`<div class="log-image-export-modal"><h3>꾸며진 로그 PNG 저장</h3><p class="m-sub">앱 상단바와 편집 도구는 제외하고, 현재 템플릿이 적용된 로그 본문만 PNG로 저장합니다. 폭을 고르면 해당 반응형 폭으로 다시 배치해 캡처합니다.</p><div class="log-image-export-options" role="group" aria-label="PNG 저장 폭">${rows}</div><div class="log-image-export-note"><span>✦</span><span>기본은 2배 해상도로 저장합니다. 아주 긴 로그는 한 장 제한 안에서 자동으로 해상도가 낮아질 수 있어요.</span></div><div class="m-row"><button class="m-btn" id="logImageExportCancel">취소</button><button class="m-btn primary" id="logImageExportSave">PNG 저장</button></div></div>`);
+    const draw = () => {
+      $("modalBox").querySelectorAll("[data-log-image-width]").forEach((button) => {
+        const on = Number(button.dataset.logImageWidth) === selected;
+        button.classList.toggle("is-selected", on);
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    };
+    $("modalBox").querySelectorAll("[data-log-image-width]").forEach((button) => button.addEventListener("click", () => { selected = Number(button.dataset.logImageWidth) || 680; draw(); }));
+    $("logImageExportCancel").addEventListener("click", closeModal);
+    $("logImageExportSave").addEventListener("click", async () => {
+      const button = $("logImageExportSave");
+      if (button) { button.disabled = true; button.textContent = "PNG 준비 중…"; }
+      closeModal();
+      await exportLogPng(id, selected);
+    });
+  }
+
   function openLogSheet(n) {
     openSheet(n.title, [
       { icon: IC.pin, label: n.pinned ? "고정 해제" : "상단 고정", fn: () => togglePinNote(n.id) },
@@ -3220,6 +4296,7 @@
       { icon: IC.icon, label: "디자인 템플릿", fn: showLogTemplatePicker },
       { icon: IC.copy, label: "인라인 HTML 코드 복사", fn: () => void copyLogInlineHtml(n.id) },
       { icon: IC.save, label: "꾸며진 HTML 파일로 저장", fn: () => void exportLogHtml(n.id) },
+      { icon: IC.icon, label: "꾸며진 PNG 이미지로 저장", fn: () => openLogImageExportPicker(n.id) },
       { icon: IC.move, label: "다른 프로젝트로 이동", fn: () => pickTargetProject(n.projectId, (pid) => moveNote(n.id, pid).then(render)) },
       { icon: IC.copy, label: "선택 위치로 복제", fn: () => pickTargetProject(n.projectId, (pid) => duplicateNote(n.id, pid).then(render)) },
       { icon: IC.del, label: "삭제", danger: true, fn: () => confirmModal("로그 삭제", `'${n.title}'를 삭제할까요?`, "삭제", true, async () => { await deleteNote(n.id); back(); }) }
@@ -4267,8 +5344,284 @@
 
   /* ---------- smart hyperlinks ---------- */
   const URL_RE = /^https?:\/\/[^\s]+$/i;
+  function applyFreeMemoNoteLinkColor(link, color, textColor) {
+    if (!link) return "";
+    const value = normalizeIdeaColorValue(color, ideaPreferredColor());
+    const ink = normalizeIdeaTextColorValue(textColor || link.dataset.lumiNoteTextColor || "auto");
+    link.dataset.lumiNoteColor = value;
+    link.dataset.lumiNoteTextColor = ink;
+    Object.entries(ideaColorVars(value, ink)).forEach(([name, cssValue]) => link.style.setProperty(name, cssValue));
+    return value;
+  }
+  function freeMemoNoteLinkCardInnerMarkup(note, fallbackTitle) {
+    const title = String((note && note.title) || fallbackTitle || "제목 없는 메모");
+    const typeLabel = note ? noteTypeShortLabel(note) : "메모 없음";
+    return `<span class="idea-quote-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 14 21 3"/><path d="M15 3h6v6"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg></span><span class="idea-quote-copy"><span class="idea-quote-eyebrow">내 메모</span><span class="idea-quote-title">${esc(title)}</span><span class="idea-quote-preview">${esc(typeLabel)}</span></span><span class="idea-quote-go" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span>`;
+  }
+  function ensureFreeMemoNoteLinkCard(link) {
+    if (!link) return;
+    const noteId = String(link.dataset.lumiNoteId || "").trim();
+    const note = noteId ? getNote(noteId) : null;
+    const fallbackTitle = String(link.dataset.lumiNoteTitle || link.textContent || "").trim();
+    if (!link.querySelector(".idea-quote-copy") || !link.querySelector(".idea-quote-mark svg") || !link.querySelector(".idea-quote-go svg")) {
+      link.innerHTML = freeMemoNoteLinkCardInnerMarkup(note, fallbackTitle);
+    }
+    if (!link.dataset.lumiNoteTitle) link.dataset.lumiNoteTitle = String((note && note.title) || fallbackTitle || "제목 없는 메모");
+    if (!link.closest(".free-note-link-block") && link.parentNode) {
+      const block = document.createElement("div");
+      block.className = "free-note-link-block";
+      link.parentNode.insertBefore(block, link);
+      block.appendChild(link);
+    }
+  }
   function normalizeLinks(root) {
-    root.querySelectorAll("a").forEach((a) => { a.classList.add("lumi-link"); a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer"); });
+    if (!root) return;
+    root.querySelectorAll("a").forEach((a) => {
+      a.classList.add("lumi-link");
+      const noteId = String(a.dataset.lumiNoteId || "").trim();
+      if (noteId) {
+        a.classList.add("lumi-note-link", "idea-quote-body");
+        a.setAttribute("href", `#lumi-note-${noteId}`);
+        a.removeAttribute("target"); a.removeAttribute("rel");
+        const storedColor = String(a.dataset.lumiNoteColor || "").trim();
+        const storedTextColor = String(a.dataset.lumiNoteTextColor || "").trim();
+        if (storedColor || storedTextColor) applyFreeMemoNoteLinkColor(a, storedColor || ideaPreferredColor(), storedTextColor || "auto");
+        ensureFreeMemoNoteLinkCard(a);
+        return;
+      }
+      a.setAttribute("target", "_blank"); a.setAttribute("rel", "noopener noreferrer");
+    });
+  }
+  function bindInternalNoteLinks(root) {
+    if (!root) return;
+    root.querySelectorAll("a[data-lumi-note-id]").forEach((link) => {
+      if (link.dataset.lumiBound === "1") return;
+      link.dataset.lumiBound = "1";
+      link.addEventListener("click", (event) => {
+        event.preventDefault(); event.stopPropagation();
+        const targetId = String(link.dataset.lumiNoteId || "").trim();
+        if (!targetId || !getNote(targetId)) { toast("연결된 메모를 찾을 수 없어요"); return; }
+        void openNote(targetId);
+      });
+    });
+  }
+  function captureFreeEditorRange() {
+    const editor = $("editor"), selection = window.getSelection();
+    if (!editor || !selection || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    return editor.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+  }
+  function restoreFreeEditorRange(savedRange) {
+    const editor = $("editor"); if (!editor) return false;
+    editor.focus();
+    const selection = window.getSelection(); if (!selection) return false;
+    let range = savedRange;
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+    }
+    selection.removeAllRanges(); selection.addRange(range); return true;
+  }
+  function insertFreeEditorMarkup(markup, savedRange) {
+    if (st.codeMode) { toast("코드 보기에서는 본문 삽입을 사용할 수 없어요"); return false; }
+    if (!activeFreeSession()) { toast("열린 자유 메모를 찾지 못했어요"); return false; }
+    if (!restoreFreeEditorRange(savedRange)) return false;
+    document.execCommand("insertHTML", false, markup);
+    normalizeLinks($("editor")); scheduleSave();
+    return true;
+  }
+  function freeMemoInternalLinkMarkup(note, color, textColor) {
+    const title = String(note && note.title || "제목 없는 메모");
+    const type = noteTypeShortLabel(note);
+    const project = note && getProject(note.projectId);
+    const hint = `${project ? project.name : "프로젝트 없음"} · ${type}`;
+    const id = esc(note.id);
+    const linkColor = normalizeIdeaColorValue(color, ideaPreferredColor());
+    const linkTextColor = normalizeIdeaTextColorValue(textColor);
+    return `<div class="free-note-link-block"><a class="lumi-link lumi-note-link idea-quote-body" href="#lumi-note-${id}" data-lumi-note-id="${id}" data-lumi-note-title="${esc(title)}" data-lumi-note-color="${esc(linkColor)}" data-lumi-note-text-color="${esc(linkTextColor)}" title="${esc(hint)}" style="${ideaColorStyleAttr(linkColor, linkTextColor)}">${freeMemoNoteLinkCardInnerMarkup(note, title)}</a></div><p><br></p>`;
+  }
+  function freeMemoNoteLinkPreviewMarkup(note, color, textColor, id) {
+    const title = String(note && note.title || "제목 없는 메모");
+    const type = noteTypeShortLabel(note);
+    const project = note && getProject(note.projectId);
+    const hint = `${project ? project.name : "프로젝트 없음"} · ${type}`;
+    const linkColor = normalizeIdeaColorValue(color, ideaPreferredColor());
+    const linkTextColor = normalizeIdeaTextColorValue(textColor);
+    const attrs = id ? ` id="${esc(id)}"` : "";
+    return `<a${attrs} class="lumi-link lumi-note-link idea-quote-body" href="#" data-lumi-note-id="preview" data-lumi-note-title="${esc(title)}" data-lumi-note-color="${esc(linkColor)}" data-lumi-note-text-color="${esc(linkTextColor)}" title="${esc(hint)}" style="${ideaColorStyleAttr(linkColor, linkTextColor)}">${freeMemoNoteLinkCardInnerMarkup(note, title)}</a>`;
+  }
+  function normalizeFreeDividerConfig(input) {
+    const src = input && typeof input === "object" ? input : {};
+    const style = Object.prototype.hasOwnProperty.call(IDEA_DIVIDER_STYLES, String(src.style || "")) ? String(src.style) : "solid";
+    const weight = Math.max(1, Math.min(12, Math.round(Number(src.weight) || 3)));
+    const color = normalizeIdeaColorValue(src.color, ideaPreferredColor());
+    return { style, weight, color };
+  }
+  function freeDividerPreviewMarkup(config, id) {
+    const data = normalizeFreeDividerConfig(config);
+    const attrs = id ? ` id="${esc(id)}"` : "";
+    return `<div${attrs} class="idea-preview-divider lumi-note-divider" data-divider-style="${esc(data.style)}" style="${ideaColorStyleAttr(data.color, "")};--idea-divider-weight:${data.weight}px"><div class="idea-divider-body" aria-hidden="true"><span></span></div></div>`;
+  }
+  function freeMemoDividerMarkup(config) {
+    const data = normalizeFreeDividerConfig(config);
+    return `<div class="idea-preview-divider lumi-note-divider" contenteditable="false" data-lumi-note-divider="1" data-divider-style="${esc(data.style)}" data-divider-color="${esc(data.color)}" style="${ideaColorStyleAttr(data.color, "")};--idea-divider-weight:${data.weight}px"><div class="idea-divider-body" aria-hidden="true"><span></span></div></div><p><br></p>`;
+  }
+  function openFreeMemoDividerStylePicker(savedRange, initialConfig) {
+    const config = normalizeFreeDividerConfig(initialConfig);
+    const tiles = Object.entries(IDEA_DIVIDER_STYLES).map(([key, meta]) =>
+      `<button type="button" class="idea-divider-choice${config.style === key ? " active" : ""}" data-free-divider-style="${esc(key)}" title="${esc(meta.desc)}">`
+      + freeDividerPreviewMarkup({ ...config, style: key })
+      + `<small>${esc(meta.label)}</small></button>`).join("");
+    openModal(`<h3>구분선 디자인</h3><p class="m-sub">아이디어 보드와 같은 구분선 도구입니다. 굵기와 디자인을 고른 뒤 컬러를 정합니다.</p>`
+      + `<label class="idea-overlay-range idea-divider-weight-range"><span>선 굵기 <b id="freeDivWeightValue">${config.weight}px</b></span><input id="freeDivWeight" type="range" min="1" max="12" step="1" value="${config.weight}" aria-label="구분선 굵기"></label>`
+      + `<div class="idea-divider-choice-grid">${tiles}</div>`
+      + `<div class="m-row"><button class="m-btn" id="freeDividerStyleClose">닫기</button></div>`);
+    const updateWeight = (value) => {
+      config.weight = Math.max(1, Math.min(12, Math.round(Number(value) || 3)));
+      const label = $("freeDivWeightValue"); if (label) label.textContent = config.weight + "px";
+      $("modalBox").querySelectorAll(".idea-preview-divider").forEach((preview) => preview.style.setProperty("--idea-divider-weight", config.weight + "px"));
+    };
+    const weightInput = $("freeDivWeight");
+    if (weightInput) weightInput.addEventListener("input", () => updateWeight(weightInput.value));
+    $("modalBox").querySelectorAll("[data-free-divider-style]").forEach((button) => button.addEventListener("click", () => {
+      config.style = button.dataset.freeDividerStyle || "solid";
+      openFreeMemoDividerColorPicker(savedRange, config);
+    }));
+    $on("freeDividerStyleClose", "click", closeModal);
+  }
+  function openFreeMemoDividerColorPicker(savedRange, initialConfig) {
+    const config = normalizeFreeDividerConfig(initialConfig);
+    const preview = () => freeDividerPreviewMarkup(config, "freeDividerColorPreview");
+    openModal(`<h3>구분선 컬러</h3><p class="m-sub">${esc((IDEA_DIVIDER_STYLES[config.style] || IDEA_DIVIDER_STYLES.solid).label)} 디자인에 적용할 색을 고릅니다.</p>`
+      + preview()
+      + `<div class="idea-options-label">구분선 컬러</div><div class="idea-color-grid palette-grid">${ideaColorChoicesMarkup(config.color, "data-free-divider-color", true)}</div>`
+      + `<div class="m-row"><button class="m-btn" id="freeDividerColorBack">뒤로가기</button><button class="m-btn primary" id="freeDividerColorDone">삽입</button></div>`);
+    const update = () => {
+      const target = $("freeDividerColorPreview");
+      if (!target) return;
+      target.dataset.dividerStyle = config.style;
+      target.setAttribute("style", `${ideaColorStyleAttr(config.color, "")};--idea-divider-weight:${config.weight}px`);
+    };
+    $("modalBox").querySelectorAll("[data-free-divider-color]").forEach((button) => button.addEventListener("click", () => {
+      config.color = button.dataset.freeDividerColor || config.color;
+      $("modalBox").querySelectorAll("[data-free-divider-color]").forEach((item) => item.classList.toggle("active", item === button));
+      update();
+    }));
+    $("modalBox").querySelectorAll('[data-idea-custom-color="data-free-divider-color"]').forEach((button) => button.addEventListener("click", () => {
+      openIdeaCustomColorPicker("구분선 컬러 직접 선택", config.color, (value) => {
+        config.color = value;
+        openFreeMemoDividerColorPicker(savedRange, config);
+      });
+    }));
+    $on("freeDividerColorBack", "click", () => openFreeMemoDividerStylePicker(savedRange, config));
+    $on("freeDividerColorDone", "click", () => {
+      closeModal();
+      if (insertFreeEditorMarkup(freeMemoDividerMarkup(config), savedRange)) toast("구분선을 넣었어요");
+    });
+    update();
+  }
+  function openFreeMemoNoteLinkColorPicker(savedRange, note, initialColor, initialTextColor) {
+    const config = { color: normalizeIdeaColorValue(initialColor, ideaPreferredColor()), textColor: normalizeIdeaTextColorValue(initialTextColor || "auto") };
+    const preview = () => `<div class="free-note-link-preview">${freeMemoNoteLinkPreviewMarkup(note, config.color, config.textColor, "freeNoteLinkColorPreview")}</div><div class="idea-options-label">글자색</div><div class="idea-color-grid palette-grid">${ideaTextColorChoicesMarkup(config.textColor, "data-free-note-link-text-color", true)}</div>`;
+    openModal(`<h3>바로가기 버튼 컬러</h3><p class="m-sub">자유 메모 본문에서 보일 버튼 컬러를 고릅니다. 연결 대상은 메모 ID를 따라가므로, 프로젝트를 옮겨도 유지됩니다.</p>`
+      + preview()
+      + `<div class="idea-options-label">버튼 컬러</div><div class="idea-color-grid palette-grid">${ideaColorChoicesMarkup(config.color, "data-free-note-link-color", true)}</div>`
+      + `<div class="m-row"><button class="m-btn" id="freeNoteLinkColorBack">뒤로가기</button><button class="m-btn primary" id="freeNoteLinkColorDone">삽입</button></div>`);
+    const update = () => {
+      const target = $("freeNoteLinkColorPreview");
+      if (!target) return;
+      target.dataset.lumiNoteColor = config.color;
+      target.dataset.lumiNoteTextColor = config.textColor;
+      target.setAttribute("style", ideaColorStyleAttr(config.color, config.textColor));
+    };
+    $("modalBox").querySelectorAll("[data-free-note-link-color]").forEach((button) => button.addEventListener("click", () => {
+      config.color = normalizeIdeaColorValue(button.dataset.freeNoteLinkColor, config.color);
+      $("modalBox").querySelectorAll("[data-free-note-link-color]").forEach((item) => item.classList.toggle("active", item === button));
+      update();
+    }));
+    $("modalBox").querySelectorAll("[data-free-note-link-text-color]").forEach((button) => button.addEventListener("click", () => {
+      config.textColor = normalizeIdeaTextColorValue(button.dataset.freeNoteLinkTextColor);
+      $("modalBox").querySelectorAll("[data-free-note-link-text-color]").forEach((item) => item.classList.toggle("active", item === button));
+      update();
+    }));
+    $("modalBox").querySelectorAll('[data-idea-custom-color="data-free-note-link-color"]').forEach((button) => button.addEventListener("click", () => {
+      openIdeaCustomColorPicker("바로가기 버튼 컬러 직접 선택", config.color, (value) => {
+        config.color = normalizeIdeaColorValue(value, config.color);
+        openFreeMemoNoteLinkColorPicker(savedRange, note, config.color, config.textColor);
+      });
+    }));
+    $("modalBox").querySelectorAll('[data-idea-custom-color="data-free-note-link-text-color"]').forEach((button) => button.addEventListener("click", () => {
+      openIdeaCustomColorPicker("바로가기 버튼 글자색 직접 선택", ideaTextColorValue(config.textColor) || "#20242d", (value) => {
+        config.textColor = normalizeIdeaTextColorValue(value);
+        openFreeMemoNoteLinkColorPicker(savedRange, note, config.color, config.textColor);
+      });
+    }));
+    $on("freeNoteLinkColorBack", "click", () => openFreeMemoNoteLinkPicker(savedRange));
+    $on("freeNoteLinkColorDone", "click", () => {
+      closeModal();
+      if (insertFreeEditorMarkup(freeMemoInternalLinkMarkup(note, config.color, config.textColor), savedRange)) toast("내 글 바로가기를 넣었어요");
+    });
+    update();
+  }
+
+  function openFreeMemoNoteLinkPicker(savedRange) {
+    const current = getNote(st.curNoteId);
+    const candidates = st.notes.filter((note) => note.id !== (current && current.id));
+    const bodyText = (note) => { try { return [preview(noteHtml(note)), JSON.stringify(note.data || {}).slice(0, 3000)].join(" "); } catch (e) { return preview(noteHtml(note)); } };
+    const searchText = (note) => [note.title || "", noteTypeShortLabel(note), noteTypeLabel(note), TYPE_TAG[visualMemoType(note)] || "", note.type === "idea" ? ideaBoardSummary(note) : bodyText(note)].join(" ").toLocaleLowerCase("ko");
+    let tab = "all", selectedProjectId = null, query = "";
+    const projectName = (projectId) => { const project = getProject(projectId); return project ? project.name : "프로젝트 없음"; };
+    const pick = (id) => {
+      const target = getNote(id);
+      if (!target) { toast("연결할 메모를 찾지 못했어요"); return; }
+      openFreeMemoNoteLinkColorPicker(savedRange, target, ideaPreferredColor());
+    };
+    const noteRows = (list) => list.length ? list.map((note) => `<div class="log-template-item idea-quote-item"><button class="log-template-main" type="button" data-free-note-link="${esc(note.id)}"><span class="log-template-title"><span class="memo-tag t-${visualMemoType(note)}">${TYPE_TAG[visualMemoType(note)] || "?"}</span><b>${esc(note.title || "제목 없는 메모")}</b></span><small>${esc(projectName(note.projectId))} · ${esc(noteTypeShortLabel(note))} · ${esc(note.type === "idea" ? ideaBoardSummary(note) : preview(noteHtml(note)) || "내용 없음")}</small></button></div>`).join("") : '<div class="log-template-empty">검색 결과가 없어요.</div>';
+    const projectRows = (list) => list.length ? list.map((project) => {
+      const count = candidates.filter((note) => note.projectId === project.id).length;
+      const framed = frameById(project.frame);
+      const thumb = `<span class="idea-quote-project-thumb${framed ? " has-frame" : ""}">${projectThumbMedia(project)}${framed ? `<span class="frame">${frameInner(project)}</span>` : ""}</span>`;
+      return `<div class="log-template-item idea-quote-project-item"><button class="log-template-main" type="button" data-free-note-project="${esc(project.id)}">${thumb}<span class="idea-quote-project-copy"><span class="log-template-title"><b>${esc(project.name || "이름 없는 프로젝트")}</b></span><small>연결 가능한 메모 ${count}개</small></span></button></div>`;
+    }).join("") : '<div class="log-template-empty">표시할 프로젝트가 없어요.</div>';
+    openModal(`<div class="log-template-manager idea-quote-manager free-note-link-manager"><h3>내 글 바로가기</h3><p class="m-sub">아이디어 보드와 같은 방식으로, 연결할 메모를 전체 또는 프로젝트별로 골라요.</p><div class="log-template-tabs" role="tablist" aria-label="내 글 바로가기 구분"><button data-free-note-tab="all" role="tab">전체보기 <small></small></button><button data-free-note-tab="project" role="tab">프로젝트별 <small></small></button></div><div class="log-template-tools"><input class="m-input" id="freeNoteLinkSearch" type="search" autocomplete="off" placeholder="제목·내용·종류 검색"></div><div class="log-template-list idea-quote-results" id="freeNoteLinkList"></div><div class="m-row"><button class="m-btn" id="freeNoteProjectBack" type="button" hidden>← 뒤로가기</button><button class="m-btn" id="freeNoteLinkCancel">닫기</button></div></div>`);
+    $("modalBox").classList.add("log-template-modal", "idea-quote-modal");
+    $("modalScrim").classList.add("log-template-open");
+    const draw = () => {
+      $("modalBox").querySelectorAll("[data-free-note-tab]").forEach((button) => {
+        const active = button.dataset.freeNoteTab === tab;
+        button.classList.toggle("active", active); button.setAttribute("aria-selected", active ? "true" : "false");
+        const small = button.querySelector("small"); if (small) small.textContent = button.dataset.freeNoteTab === "all" ? String(candidates.length) : String(st.projects.length);
+      });
+      const input = $("freeNoteLinkSearch"), back = $("freeNoteProjectBack"), box = $("freeNoteLinkList");
+      if (!box) return;
+      if (input && document.activeElement !== input) input.value = query;
+      const q = query.trim().toLocaleLowerCase("ko");
+      if (back) back.hidden = !(tab === "project" && selectedProjectId);
+      if (tab === "project" && selectedProjectId == null) {
+        if (input) input.placeholder = "프로젝트 이름 검색";
+        const projects = st.projects.filter((project) => !q || String(project.name || "").toLocaleLowerCase("ko").includes(q)).sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "ko"));
+        box.innerHTML = projectRows(projects);
+        box.querySelectorAll("[data-free-note-project]").forEach((button) => button.addEventListener("click", () => { selectedProjectId = button.dataset.freeNoteProject; query = ""; draw(); }));
+        return;
+      }
+      if (input) input.placeholder = tab === "project" ? `${projectName(selectedProjectId)} 안에서 검색` : "제목·내용·종류 검색";
+      const source = (tab === "project" && selectedProjectId) ? candidates.filter((note) => note.projectId === selectedProjectId) : candidates;
+      const list = (q ? source.filter((note) => searchText(note).includes(q)) : source).sort((a, b) => String(a.title || "").localeCompare(String(b.title || ""), "ko"));
+      box.innerHTML = source.length ? noteRows(list) : '<div class="log-template-empty">연결할 메모가 없어요.</div>';
+      box.querySelectorAll("[data-free-note-link]").forEach((button) => button.addEventListener("click", () => pick(button.dataset.freeNoteLink)));
+    };
+    $("modalBox").querySelectorAll("[data-free-note-tab]").forEach((button) => button.addEventListener("click", () => { tab = button.dataset.freeNoteTab; selectedProjectId = null; query = ""; draw(); }));
+    $("freeNoteLinkSearch").addEventListener("input", (event) => { query = event.target.value; draw(); });
+    $on("freeNoteProjectBack", "click", () => { selectedProjectId = null; query = ""; draw(); });
+    $on("freeNoteLinkCancel", "click", closeModal);
+    draw();
+  }
+  function openFreeInsertMenu(savedRange) {
+    if (st.codeMode) { toast("코드 보기에서는 본문 삽입을 사용할 수 없어요"); return; }
+    const range = savedRange || captureFreeEditorRange();
+    openModal(`<h3>본문에 삽입</h3><p class="m-sub">현재 커서 위치에 내 글 바로가기 또는 구분선을 넣습니다.</p><div class="idea-add-menu free-insert-menu"><button type="button" class="idea-add-choice" id="freeInsertNoteLink"><span class="iac-ico">↗</span><span><b>내 글 바로가기</b><small>작성한 다른 메모를 여는 연결 칩</small></span></button><button type="button" class="idea-add-choice" id="freeInsertDivider"><span class="iac-ico">—</span><span><b>구분선</b><small>굵기·디자인·컬러를 골라 삽입</small></span></button></div><div class="m-row"><button class="m-btn" id="freeInsertCancel">취소</button></div>`);
+    $on("freeInsertNoteLink", "click", () => openFreeMemoNoteLinkPicker(range));
+    $on("freeInsertDivider", "click", () => openFreeMemoDividerStylePicker(range));
+    $on("freeInsertCancel", "click", closeModal);
   }
   function insertLinkPrompt() {
     $("editor").focus();
@@ -4330,6 +5683,7 @@
 
   function newNoteScreen(type) {
     if (type === "html") return "html";
+    if (type === "regex") return "regex";
     if (type === "lorebook") return "lore";
     if (type === "log") return "log";
     if (type === "character" || type === "persona") return "character";
@@ -4358,6 +5712,7 @@
       people: icon('<circle cx="9" cy="8" r="3.2"/><circle cx="16.5" cy="10" r="2.4"/><path d="M3.5 21a6.2 6.2 0 0 1 11 0"/><path d="M13 20.5a4.5 4.5 0 0 1 7.5 0"/>'),
       lore: icon('<path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h7M8 11h7"/>'),
       html: icon('<path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/><path d="M13 4l-2 16"/>'),
+      regex: icon('<path d="M4 6h16M4 18h16"/><path d="M8 10v4M6 12h4M14 10l4 4M18 10l-4 4"/>'),
       free: icon('<path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/>'),
       log: icon('<path d="M4 4h16v16H4z"/><path d="M7 8h10M7 12h7M7 16h9"/><path d="M4 7h16"/>'),
       idea: icon('<rect x="4" y="4" width="16" height="16" rx="2.5"/><path d="M8 16.5l2.4-5.8 2.3 4.2 1.5-2.2 2.8 3.8"/><circle cx="15.8" cy="8.2" r="1.5"/><path d="M7 7.5h4"/>')
@@ -4385,7 +5740,8 @@
         <div class="type-picker-pane" data-type-pane="studio" role="tabpanel" hidden>
           <div class="type-pane-caption">Writing tools</div>
           ${card("lorebook", "", "로어북", "마크다운 · 키워드 · 토큰 · World Info 내보내기", icons.lore)}
-          ${card("html", "", "HTML 작업실", "원본 코드 보존 · 샌드박스 미리보기 · 그대로 내보내기", icons.html)}
+          ${card("html", "", "코드 작업실", "원본 코드 보존 · 샌드박스 미리보기 · 그대로 내보내기", icons.html)}
+          ${card("regex", "", "정규식 작업실", "IN 검증 · OUT HTML 미리보기 · SillyTavern JSON 내보내기", icons.regex)}
         </div>
         <div class="type-picker-pane" data-type-pane="atelier" role="tabpanel" hidden>
           <div class="type-pane-caption">Creative atelier</div>
@@ -4506,10 +5862,10 @@
   /* ---------- attachments ---------- */
   /* ---------- top bar title quick rename ---------- */
   let topTitleRenameCooldown = 0;
-  const TOP_TITLE_IDS = ["edTitle", "readTitle", "htmlTitle", "loreTitle", "logTitle", "perTitle", "charTitle", "ideaTitle"];
+  const TOP_TITLE_IDS = ["edTitle", "readTitle", "htmlTitle", "regexTitle", "loreTitle", "logTitle", "perTitle", "charTitle", "ideaTitle"];
   function titleKindLabel(n) {
     if (!n) return "메모";
-    return ({ free:"메모", html:"HTML 작업실", lorebook:"로어북", log:"로그", persona:"페르소나", character:"캐릭터", idea:"아이디어 보드" })[n.type] || "메모";
+    return ({ free:"메모", html:"코드 작업실", regex:"정규식 작업실", lorebook:"로어북", log:"로그", persona:"페르소나", character:"캐릭터", idea:"아이디어 보드" })[n.type] || "메모";
   }
   async function saveTopTitleRename(n, value) {
     const next = cleanImportedText(value, 80).trim(); if (!n || !next) return;
@@ -4592,6 +5948,7 @@
     if (isCharacterCardType(n)) { openCharacterSheet(n); return; }
     if (n.type === "idea") { openIdeaBoardSheet(n); return; }
     if (n.type === "html") { openHtmlSheet(n); return; }
+    if (n.type === "regex") { openRegexSheet(n); return; }
     openSheet(n.title, [
       { icon: IC.pin, label: n.pinned ? "고정 해제" : "상단 고정", fn: () => togglePinNote(id) },
       { icon: IC.rename, label: "이름 바꾸기", fn: () => renameModal("메모 이름", n.title, async (v) => { if (v) { n.title = v; n.titleLocked = true; await saveNote(n); render(); } }) },
@@ -4782,6 +6139,7 @@
     if (n.type === "persona") { const d = n.data || {}, ko = d.ko || {}, en = d.en || {}; return [ko.name, (ko.tags || []).join(" "), ko.detail, en.name, (en.tags || []).join(" "), en.detail].filter(Boolean).join(" ").toLowerCase(); }
     if (isCharacterCardType(n)) { const d = ensureCharacterData(n); return d.pages.map((p) => [p.ko.name, (p.ko.tags || []).join(" "), p.ko.detail, p.en.name, (p.en.tags || []).join(" "), p.en.detail, p.creatorMemo].join(" ")).join(" ").toLowerCase(); }
     if (n.type === "html") return plainText(htmlSourceOf(n)).toLowerCase();
+    if (n.type === "regex") { const d = normalizeRegexData(n.data || {}); return [d.scriptName, d.findRegex, d.replaceString, d.sampleText, d.trimStrings.join(" ")].join(" ").toLowerCase(); }
     return plainText(noteHtml(n)).toLowerCase();
   }
   function doSearch(q) {
@@ -5001,12 +6359,12 @@
   }
   function normalizeImportedNote(raw) {
     if (!raw || !isSafeRecordId(raw.id) || !isSafeRecordId(raw.projectId)) return null;
-    const sourceType = ["free", "html", "lorebook", "log", "persona", "character", "idea"].includes(raw.type) ? raw.type : null;
+    const sourceType = ["free", "html", "regex", "lorebook", "log", "persona", "character", "idea"].includes(raw.type) ? raw.type : null;
     if (!sourceType) return null;
     const type = sourceType;
     const note = {
       id: raw.id, projectId: raw.projectId, type,
-      title: cleanImportedText(raw.title, 180) || (sourceType === "persona" ? "이름 없는 페르소나" : type === "character" ? "이름 없는 캐릭터 모음" : type === "html" ? "제목 없는 HTML 작업실" : type === "lorebook" ? "이름 없는 로어북" : type === "log" ? "이름 없는 로그" : "제목 없는 메모"),
+      title: cleanImportedText(raw.title, 180) || (sourceType === "persona" ? "이름 없는 페르소나" : type === "character" ? "이름 없는 캐릭터 모음" : type === "html" ? "제목 없는 코드 작업실" : type === "regex" ? "새 정규식 작업실" : type === "lorebook" ? "이름 없는 로어북" : type === "log" ? "이름 없는 로그" : "제목 없는 메모"),
       titleLocked: !!raw.titleLocked,
       chipColor: CHIP[raw.chipColor] ? raw.chipColor : null,
       createdAt: Number(raw.createdAt) || now(),
@@ -5026,7 +6384,9 @@
       if (attachments.length) note.data.attachments = attachments;
     } else if (type === "html") {
       // 백업·프로젝트 가져오기에서도 raw source를 sanitize/DOM serialization 없이 문자열 그대로 되살립니다.
-      note.data = { source: cleanImportedText(data.source, HTML_SOURCE_MAX), previewPolicy: "sandbox-web" };
+      note.data = { source: cleanImportedText(data.source, HTML_SOURCE_MAX), previewPolicy: "sandbox-web", exportFormat: data.exportFormat === "json" || data.exportFormat === "md" ? data.exportFormat : "html" };
+    } else if (type === "regex") {
+      note.data = normalizeRegexData(data);
     } else if (type === "lorebook") {
       note.data = {
         content: cleanImportedText(data.content, 500000),
@@ -5311,7 +6671,7 @@
       return;
     }
     const type = notes[0].type;
-    if (type === "html" || type === "idea") { toast(type === "html" ? "HTML 작업실은 원본 보존을 위해 합치지 않아요" : "아이디어 보드는 캔버스 배치를 보존하기 위해 합치지 않아요"); return; }
+    if (type === "html" || type === "idea") { toast(type === "html" ? "코드 작업실은 원본 보존을 위해 합치지 않아요" : "아이디어 보드는 캔버스 배치를 보존하기 위해 합치지 않아요"); return; }
     if (!notes.every((n) => n.type === type)) { toast("같은 종류끼리만 합칠 수 있어요"); return; }
     const pid = notes[0].projectId;
     if (type === "lorebook") {
@@ -5807,22 +7167,210 @@ ${gallery}
     const styleTag = scopedCss ? `<style data-lumink-user-style="1">${scopedCss.replace(/<\/style/gi, "")}</style>` : "";
     return { html: `${styleTag}${doc.body ? doc.body.innerHTML.trim() : ""}`.trim(), title: titleEl ? cleanImportedText(titleEl.textContent, 180).trim() : "" };
   }
+  /* ---------- file open: HTML / JSON ---------- */
+  // JSON은 월드인포만 가져오는 파일이 아니라, 설정·정규식·캐릭터 카드처럼
+  // 내용을 확인해야 하는 원본 문서이기도 합니다. 구조형 가져오기와 원문 열기를 분리합니다.
+  const JSON_OPEN_MAX = HTML_SOURCE_MAX;
+  function isJsonFile(file) {
+    // 모바일 파일 제공자는 MIME을 비워 두거나 application/octet-stream으로 넘기는 경우가 많습니다.
+    // 그래서 MIME만 믿지 않고 파일명 확장자와 흔한 JSON 계열 MIME을 함께 확인합니다.
+    const name = String((file && file.name) || "").trim();
+    const type = String((file && file.type) || "").toLowerCase().split(";")[0].trim();
+    return /\.json$/i.test(name)
+      || type === "application/json"
+      || type === "text/json"
+      || type === "application/ld+json"
+      || /\+json$/i.test(type);
+  }
+  function looksLikeJsonText(raw) {
+    // 확장자·MIME이 유실된 모바일 공유 파일도 내용이 JSON이면 JSON 열기 흐름으로 보냅니다.
+    const text = String(raw == null ? "" : raw).replace(/^\uFEFF/, "").trimStart();
+    if (!text) return false;
+    if (text[0] !== "{" && text[0] !== "[") return false;
+    try { JSON.parse(text); return true; }
+    catch (e) { return true; } // JSON처럼 보이지만 문법이 깨졌다면 원본 작업실에서 점검할 수 있게 둡니다.
+  }
+  function looksLikeBinaryText(raw) {
+    // 열기 선택기는 Android 파일 앱의 MIME 분류에 의존하지 않도록 전체 파일을 보이게 둡니다.
+    // 대신 앱 안에서 NUL·제어문자가 많은 이진 파일만 막아 HTML/JSON 원문 흐름이 깨지지 않게 합니다.
+    const text = String(raw == null ? "" : raw);
+    if (!text) return false;
+    const sample = text.slice(0, 8192);
+    if (sample.indexOf("\u0000") >= 0) return true;
+    let controls = 0;
+    for (let i = 0; i < sample.length; i++) {
+      const code = sample.charCodeAt(i);
+      if (code < 32 && code !== 9 && code !== 10 && code !== 13) controls++;
+    }
+    return controls > Math.max(6, Math.floor(sample.length * 0.03));
+  }
+  function jsonImportedTitle(file) {
+    const name = cleanImportedText(String((file && file.name) || ""), 220).trim().replace(/\.json$/i, "");
+    return name || "불러온 JSON";
+  }
+  function isMarkdownFile(file) {
+    const name = String((file && file.name) || "").trim();
+    const type = String((file && file.type) || "").toLowerCase().split(";")[0].trim();
+    return /\.(?:md|markdown|mdown|mkdn|mkd)$/i.test(name)
+      || type === "text/markdown"
+      || type === "text/x-markdown"
+      || type === "application/markdown"
+      || type === "text/md";
+  }
+  function markdownImportedTitle(file) {
+    const name = cleanImportedText(String((file && file.name) || ""), 220).trim().replace(/\.(?:md|markdown|mdown|mkdn|mkd)$/i, "");
+    return name || "불러온 Markdown";
+  }
+  function worldInfoEntriesFromPayload(data) {
+    const entries = (data && typeof data === "object" && data.entries) ? data.entries : data;
+    const list = Array.isArray(entries) ? entries : Object.values(entries || {});
+    return list.filter((entry) => entry && typeof entry === "object" && (("content" in entry) || ("key" in entry) || ("keys" in entry)));
+  }
+  function jsonReadableText(raw, payload) {
+    if (payload == null) return String(raw || "");
+    try { return JSON.stringify(payload, null, 2); }
+    catch (e) { return String(raw || ""); }
+  }
+  function openJsonAsFreeMemo(raw, file, payload) {
+    if (raw.length > JSON_OPEN_MAX) { toast("JSON 파일은 5MB 이하만 메모로 열 수 있어요"); return; }
+    pickTargetProject(st.curProjectId, async (pid) => {
+      const n = await createNote("free", pid);
+      n.title = jsonImportedTitle(file);
+      n.titleLocked = true;
+      // 구조를 망가뜨리지 않도록 JSON을 HTML로 해석하지 않고, 코드 블록의 텍스트로만 넣습니다.
+      n.data.html = `<pre><code class="language-json">${esc(jsonReadableText(raw, payload))}</code></pre>`;
+      await saveNote(n);
+      st.curNoteId = n.id; st.curProjectId = pid;
+      toast("JSON 내용을 메모로 열었어요");
+      go({ s: "read" });
+    });
+  }
+  function openJsonAsHtmlWorkshop(raw, file) {
+    if (raw.length > JSON_OPEN_MAX) { toast("JSON 원본은 5MB 이하만 작업실로 열 수 있어요"); return; }
+    pickTargetProject(st.curProjectId, async (pid) => {
+      const n = await createNote("html", pid);
+      n.title = jsonImportedTitle(file);
+      n.titleLocked = true;
+      // 코드 작업실에는 파일의 공백·정렬을 포함한 원본 문자열을 그대로 보관합니다.
+      n.data = { source: raw, previewPolicy: "sandbox-web", exportFormat: "json" };
+      await saveNote(n);
+      st.curNoteId = n.id; st.curProjectId = pid;
+      toast("JSON 원본을 코드 작업실로 열었어요");
+      go({ s: "html" });
+    });
+  }
+  function isSillyTavernRegexPayload(payload) {
+    return !!(payload && typeof payload === "object" && typeof payload.findRegex === "string" && typeof payload.replaceString === "string");
+  }
+  function openJsonAsRegexWorkshop(raw, file, payload) {
+    if (!isSillyTavernRegexPayload(payload)) { toast("SillyTavern 정규식 JSON을 찾지 못했어요"); return; }
+    pickTargetProject(st.curProjectId, async (pid) => {
+      const n = await createNote("regex", pid);
+      n.title = cleanImportedText(payload.scriptName, 180) || jsonImportedTitle(file) || "가져온 정규식";
+      n.titleLocked = true;
+      n.data = normalizeRegexData({
+        id: payload.id,
+        scriptName: payload.scriptName || n.title,
+        findRegex: payload.findRegex,
+        replaceString: payload.replaceString,
+        trimStrings: payload.trimStrings,
+        placement: payload.placement,
+        disabled: payload.disabled,
+        markdownOnly: payload.markdownOnly,
+        promptOnly: payload.promptOnly,
+        runOnEdit: payload.runOnEdit,
+        substituteRegex: payload.substituteRegex,
+        minDepth: payload.minDepth,
+        maxDepth: payload.maxDepth
+      });
+      await saveNote(n);
+      st.curNoteId = n.id; st.curProjectId = pid;
+      toast("정규식 작업실로 열었어요");
+      go({ s: "regex" });
+    });
+  }
+  function showJsonOpenChoice(raw, file, payload, parseError) {
+    const title = jsonImportedTitle(file);
+    const worldInfoEntries = payload ? worldInfoEntriesFromPayload(payload) : [];
+    const packagePreview = payload ? projectPackagePreview(payload) : null;
+    const regexPreview = payload && isSillyTavernRegexPayload(payload);
+    const status = parseError
+      ? "JSON 문법을 확인하지 못했어요. 구조형 가져오기는 할 수 없지만 원문은 열어 볼 수 있어요."
+      : `원본 ${raw.length.toLocaleString("ko-KR")}자 · 메모 보기 또는 원본 작업실 중 선택하세요.`;
+    const structured = `${packagePreview ? `<div class="type-card" id="jsonAsProject"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M3 10h18"/></svg></div><div><div class="tc-name">루미잉크 프로젝트로 가져오기</div><div class="tc-desc">프로젝트 · 메모 ${packagePreview.noteCount}개 · 첨부 ${packagePreview.fileCount}개</div></div></div>` : ""}${regexPreview ? `<div class="type-card" id="jsonAsRegex"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 18h16"/><path d="M8 10v4M6 12h4M14 10l4 4M18 10l-4 4"/></svg></div><div><div class="tc-name">정규식 작업실로 가져오기</div><div class="tc-desc">findRegex · replaceString · SillyTavern 옵션을 편집</div></div></div>` : ""}${worldInfoEntries.length ? `<div class="type-card" id="jsonAsWorldInfo"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M4 5.5c2.5-1 5.2-.6 8 1.2 2.8-1.8 5.5-2.2 8-1.2v13c-2.5-1-5.2-.6-8 1.2-2.8-1.8-5.5-2.2-8-1.2Z"/><path d="M12 6.7v13"/></svg></div><div><div class="tc-name">로어북으로 가져오기</div><div class="tc-desc">인식한 World Info 항목 ${worldInfoEntries.length}개를 로어북으로 생성</div></div></div>` : ""}`;
+    openModal(`<h3>JSON 열기</h3><p class="m-sub"><b>${esc(title)}</b><br>${esc(status)}</p>${structured}
+      <div class="type-card" id="jsonAsFreeMemo"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5M8 12h8M8 16h8"/></svg></div><div><div class="tc-name">메모로 내용 보기</div><div class="tc-desc">읽기 쉬운 들여쓰기로 정리 · 코드 블록 형태로 안전하게 표시</div></div></div>
+      <div class="type-card" id="jsonAsHtmlSource"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/><path d="M13 4l-2 16"/></svg></div><div><div class="tc-name">코드 작업실로 원본 열기</div><div class="tc-desc">공백까지 보존 · JSON 원본을 그대로 편집·복사</div></div></div>
+      <div class="m-row"><button class="m-btn" id="jsonOpenCancel">취소</button></div>`);
+    $on("jsonOpenCancel", "click", closeModal);
+    $on("jsonAsFreeMemo", "click", () => { closeModal(); openJsonAsFreeMemo(raw, file, payload); });
+    $on("jsonAsHtmlSource", "click", () => { closeModal(); openJsonAsHtmlWorkshop(raw, file); });
+    if (regexPreview) $on("jsonAsRegex", "click", () => { closeModal(); openJsonAsRegexWorkshop(raw, file, payload); });
+    if (worldInfoEntries.length) $on("jsonAsWorldInfo", "click", () => { closeModal(); importWorldInfoData(payload, file); });
+    if (packagePreview) $on("jsonAsProject", "click", () => { closeModal(); showProjectPackageImport(payload); });
+  }
+  function importJsonFile(raw, file) {
+    let payload = null, parseError = null;
+    // UTF-8 BOM이 붙은 JSON도 흔하므로, 원본 보관 문자열은 유지하고 파싱용 사본에서만 제거합니다.
+    const parseSource = String(raw || "").replace(/^\uFEFF/, "");
+    try { payload = JSON.parse(parseSource); }
+    catch (e) { parseError = e; }
+    showJsonOpenChoice(raw, file, payload, parseError);
+  }
+  function openMarkdownAsHtmlWorkshop(raw, file) {
+    if (raw.length > HTML_SOURCE_MAX) { toast("Markdown 원본은 5MB 이하만 코드 작업실로 열 수 있어요"); return; }
+    pickTargetProject(st.curProjectId, async (pid) => {
+      const n = await createNote("html", pid);
+      n.title = markdownImportedTitle(file);
+      n.titleLocked = true;
+      n.data = { source: raw, previewPolicy: "sandbox-web", exportFormat: "md" };
+      await saveNote(n);
+      st.curNoteId = n.id; st.curProjectId = pid;
+      toast("Markdown 원본을 코드 작업실로 열었어요");
+      go({ s: "html" });
+    });
+  }
   function importHtmlFile(file) {
+    const declaredJson = isJsonFile(file);
+    const declaredMarkdown = isMarkdownFile(file);
+    const size = Number(file && file.size || 0);
+    if (declaredJson && size > JSON_OPEN_MAX) { toast("JSON 파일은 5MB 이하만 열 수 있어요"); return; }
+    if (declaredMarkdown && size > HTML_SOURCE_MAX) { toast("Markdown 원본은 5MB 이하만 열 수 있어요"); return; }
+    if (!file) { toast("열 파일을 찾지 못했어요"); return; }
     const fr = new FileReader();
     fr.onload = () => {
       const raw = String(fr.result || "");
-      const looksJson = /\.json$/i.test(file.name) || (raw.trim().startsWith("{") && raw.includes('"entries"'));
-      if (looksJson) importWorldInfo(raw, file);
-      else importHtmlPayload(raw, file);
+      if (looksLikeBinaryText(raw)) {
+        toast("열기는 HTML · JSON · Markdown · 일반 텍스트 파일만 지원해요");
+        return;
+      }
+      // .md 확장자는 내용이 JSON처럼 보여도 Markdown 원문으로 우선 열어 파일 형식을 보존합니다.
+      if (declaredMarkdown) {
+        openMarkdownAsHtmlWorkshop(raw, file);
+        return;
+      }
+      // .json 확장자/MIME이 사라진 파일도 실제 내용이 JSON이면 일반 JSON 열기 창으로 보냅니다.
+      const jsonCandidate = declaredJson || looksLikeJsonText(raw);
+      if (jsonCandidate) {
+        if (raw.length > JSON_OPEN_MAX) { toast("JSON 원본은 5MB 이하만 열 수 있어요"); return; }
+        importJsonFile(raw, file);
+        return;
+      }
+      importHtmlPayload(raw, file);
     };
-    fr.onerror = () => toast("파일을 읽지 못했어요");
-    fr.readAsText(file, "UTF-8");
+    fr.onerror = () => {
+      const reason = (fr.error && (fr.error.name || fr.error.message)) ? ` (${fr.error.name || fr.error.message})` : "";
+      toast(`파일을 읽지 못했어요${reason}`);
+    };
+    try { fr.readAsText(file, "UTF-8"); }
+    catch (e) { toast("파일 열기를 시작하지 못했어요"); }
   }
   function importWorldInfo(raw, file) {
-    let data; try { data = JSON.parse(raw); } catch (e) { toast("JSON을 읽지 못했어요"); return; }
-    const entries = (data && data.entries) ? data.entries : data;
-    const list = Array.isArray(entries) ? entries : Object.values(entries || {});
-    const valid = list.filter((e) => e && typeof e === "object" && (("content" in e) || ("key" in e) || ("keys" in e)));
+    let data; try { data = JSON.parse(String(raw || "").replace(/^\uFEFF/, "")); } catch (e) { toast("JSON을 읽지 못했어요"); return; }
+    importWorldInfoData(data, file);
+  }
+  function importWorldInfoData(data, file) {
+    const valid = worldInfoEntriesFromPayload(data);
     if (!valid.length) { toast("월드인포 항목을 찾지 못했어요"); return; }
     pickTargetProject(st.curProjectId, async (pid) => {
       let cnt = 0;
@@ -6010,18 +7558,18 @@ ${gallery}
   function showHtmlImportChoice(raw, file, pid) {
     const name = file.name.replace(/\.(html?|HTML?)$/i, "") || "불러온 HTML";
     openModal(`<h3>HTML 가져오기 방식</h3><p class="m-sub"><b>${esc(name)}</b><br>문서로 정리할지, 원본 코드를 그대로 보관할지 선택하세요.</p>
-      <div class="type-card" id="importAsHtmlSource"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/><path d="M13 4l-2 16"/></svg></div><div><div class="tc-name">HTML 작업실로 원본 가져오기</div><div class="tc-desc">정화하지 않음 · 원본 문자열 그대로 저장 · 샌드박스 미리보기</div></div></div>
+      <div class="type-card" id="importAsHtmlSource"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/><path d="M13 4l-2 16"/></svg></div><div><div class="tc-name">코드 작업실로 원본 가져오기</div><div class="tc-desc">정화하지 않음 · 원본 문자열 그대로 저장 · 샌드박스 미리보기</div></div></div>
       <div class="type-card" id="importAsFreeMemo"><div class="tc-ico"><svg viewBox="0 0 24 24"><path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5"/></svg></div><div><div class="tc-name">자유 메모 문서로 가져오기</div><div class="tc-desc">리치 에디터 정화 규칙 적용 · 문서형으로 편집</div></div></div>
       <div class="m-row"><button class="m-btn" id="htmlImportCancel">취소</button></div>`);
     $on("htmlImportCancel", "click", closeModal);
     $on("importAsHtmlSource", "click", async () => {
       closeModal();
-      if (raw.length > HTML_SOURCE_MAX) { toast("HTML 원본은 5MB 이하만 가져올 수 있어요"); return; }
+      if (raw.length > HTML_SOURCE_MAX) { toast("코드 원본은 5MB 이하만 가져올 수 있어요"); return; }
       const n = await createNote("html", pid);
       n.title = cleanImportedText(name, 180) || "불러온 HTML"; n.titleLocked = true;
-      n.data = { source: raw, previewPolicy: "sandbox-web" };
+      n.data = { source: raw, previewPolicy: "sandbox-web", exportFormat: "html" };
       await saveNote(n); st.curNoteId = n.id; st.curProjectId = pid;
-      toast("원본 HTML을 작업실로 가져왔어요"); go({ s: "html" });
+      toast("원본 HTML을 코드 작업실로 가져왔어요"); go({ s: "html" });
     });
     $on("importAsFreeMemo", "click", async () => {
       closeModal();
@@ -6032,7 +7580,15 @@ ${gallery}
       toast("문서 메모로 가져왔어요"); go({ s: "editor" });
     });
   }
-  $on("fileInput", "change", (e) => { const f = e.target.files && e.target.files[0]; if (f) importHtmlFile(f); e.target.value = ""; closeSidebar(); });
+  $on("fileInput", "change", (e) => {
+    const input = e.target;
+    const f = input && input.files && input.files[0];
+    // Android 파일 선택기는 값을 즉시 비우거나 패널을 닫을 때 파일 접근이 끊기는 구현이 있어,
+    // File 객체를 먼저 잡고 다음 프레임에서 읽기를 시작합니다.
+    if (input) input.value = "";
+    closeSidebar();
+    if (f) requestAnimationFrame(() => importHtmlFile(f));
+  });
 
   /* ---------- sidebar / theme ---------- */
   function openSidebar() { renderSidebar(); document.body.classList.add("sidebar-open"); }
@@ -6085,8 +7641,9 @@ ${gallery}
   const CUSTOM_THEME_COLOR_META = Object.freeze([
     { key:"mainA",          label:"메인 색상 1 · 시작", variable:"--accent",                         fallback:"#2F6FD0", group:"main" },
     { key:"mainB",          label:"메인 색상 2 · 끝",   variable:"--accent-2",                       fallback:"#5A73D8", group:"main" },
+    { key:"softAccentBg",   label:"옅은 강조·선택 배경", variable:"--accent-soft",                    fallback:"#EAF0FF", group:"highlight" },
     { key:"logoCore",       label:"로고 중심부",         variable:"--custom-logo-ink",                fallback:"#FFFFFF", group:"brand" },
-    { key:"sectionTitleBg", label:"작은 섹션 제목 배경", variable:"--section-title-bg",                fallback:"#EAF0FF", group:"section" },
+    { key:"sectionTitleBg", label:"작은 섹션 제목 배경", variable:"--section-title-bg",                fallback:"#EAF0FF", group:"section", derived:true },
     { key:"sidebarFootBg",  label:"사이드바 하단 버튼 배경", variable:"--sidebar-foot-bg",              fallback:"#E8EEF9", group:"sidebar", derived:true },
     { key:"sidebarSectionGradientStart", label:"사이드바 섹션 제목 그라데이션 1", variable:"--sidebar-section-grad-a", fallback:"#EAF0FF", group:"sidebar", derived:true },
     { key:"sidebarCountBg", label:"사이드바 메모 개수 배경", variable:"--sidebar-count-bg",             fallback:"#EAF0FF", group:"sidebar", derived:true },
@@ -6103,7 +7660,7 @@ ${gallery}
     { key:"memoCodeBg",     label:"자유 메모 코드 보기 배경", variable:"--memo-code-bg",                  fallback:"#FCFCFD", group:"memo" },
     { key:"memoCodeIconBg", label:"자유 메모 코드 보기 아이콘 배경", variable:"--memo-code-icon-bg",       fallback:"#EAF0FF", group:"memo", derived:true },
     { key:"memoTitle",      label:"메모 제목",           variable:"--memo-title-color",               fallback:"#283A63", group:"type" },
-    { key:"homeSectionTitle", label:"메인 화면 섹션 제목", variable:"--home-section-title-color",       fallback:"#5E6377", group:"home", derived:true },
+    { key:"homeSectionTitle", label:"메인 화면 섹션 제목·정렬 글자", variable:"--home-section-title-color", fallback:"#5E6377", group:"home", derived:true },
     { key:"homeSectionTitleBg", label:"메인 화면 섹션 제목 배경", variable:"--home-section-title-bg",   fallback:"#EAF0FF", group:"home", derived:true },
     { key:"homeShadow",     label:"메인 화면 그림자",     variable:"--home-shadow-color",              fallback:"#7690C2", group:"home", derived:true },
     { key:"projectCountBg", label:"프로젝트 메모 개수 배경", variable:"--project-count-bg",              fallback:"#EAF0FF", group:"home", derived:true },
@@ -6121,19 +7678,27 @@ ${gallery}
     { key:"lineSoft",       label:"옅은 경계선",         variable:"--line-soft",                      fallback:"#EBEDF3", group:"line" }
   ]);
   const CUSTOM_THEME_GROUPS = Object.freeze([
-    ["main", "메인 그라데이션"], ["brand", "로고"], ["section", "섹션 제목"], ["sidebar", "사이드바"], ["background", "바탕"], ["card", "카드"],
+    ["main", "메인 그라데이션"], ["highlight", "옅은 강조·선택 배경"], ["brand", "로고"], ["section", "섹션 제목"], ["sidebar", "사이드바"], ["background", "바탕"], ["card", "카드"],
     ["bar", "상단바"], ["memo", "자유 메모 코드"], ["home", "메인 화면"], ["popup", "팝업"], ["settings", "설정"], ["type", "글자"], ["line", "경계선"]
   ]);
   const CUSTOM_THEME_STYLE_VARS = Object.freeze([
     ...CUSTOM_THEME_COLOR_META.map((item) => item.variable),
     "--accent-deep", "--accent-soft", "--accent-ink", "--grad-blue", "--glow", "--logo-ink",
     "--custom-main-a", "--custom-main-b", "--custom-logo-body", "--custom-logo-tip", "--custom-logo-ink", "--custom-logo-glow",
-    "--quickmenu-default-icon-bg-a", "--quickmenu-default-icon-bg-b",
+    "--quickmenu-default-icon-bg-a", "--quickmenu-default-icon-bg-b", "--quickmenu-panel-bg-b",
     "--custom-note-type-free", "--custom-note-type-html", "--custom-note-type-lorebook", "--custom-note-type-log", "--custom-note-type-persona", "--custom-note-type-character", "--custom-note-type-idea",
     "--custom-note-type-free-ink", "--custom-note-type-html-ink", "--custom-note-type-lorebook-ink", "--custom-note-type-log-ink", "--custom-note-type-persona-ink", "--custom-note-type-character-ink", "--custom-note-type-idea-ink",
     "--custom-note-divider-text", "--custom-note-divider-count"
   ]);
   const CUSTOM_THEME_FALLBACK_COLORS = Object.freeze(Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item) => [item.key, item.fallback])));
+  const CUSTOM_THEME_SHARED_SOFT_KEYS = Object.freeze([
+    "sectionTitleBg", "sidebarFootBg", "sidebarSectionGradientStart", "sidebarCountBg",
+    "memoCodeIconBg", "homeSectionTitleBg", "projectCountBg", "homeSortBg",
+    "newNoteIconBg", "settingsPressedBg"
+  ]);
+  const CUSTOM_THEME_SHARED_SOFT_VARS = Object.freeze(Object.fromEntries(CUSTOM_THEME_COLOR_META
+    .filter((item) => CUSTOM_THEME_SHARED_SOFT_KEYS.includes(item.key))
+    .map((item) => [item.variable, item.key])));
   let customThemePreviewRestore = null;
 
   function normalizeThemeHex(value, fallback) {
@@ -6176,9 +7741,9 @@ ${gallery}
         surface:L(S*.08,.999), surface2:L(S*.14,.968), surface3:L(S*.20,.936),
         barBg:L(S*.07,.998), barBg2:L(S*.12,.983), barLine:lineC,
         topbarShadow:shadow, homeShadow:shadow, settingsShadow:shadow,
-        memoCodeBg:L(S*.08,.986), memoCodeIconBg:tint,
+        softAccentBg:tint, memoCodeBg:L(S*.08,.986), memoCodeIconBg:tint,
         sectionTitleBg:tint, homeSectionTitleBg:tint, homeSortBg:tint, projectCountBg:tint,
-        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tintHi, newNoteIconBg:tint, settingsPressedBg:tintHi,
+        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tint, newNoteIconBg:tint, settingsPressedBg:tint,
         memoTitle:titleInk, modalTitle:titleInk, settingsRowTitle:inkC,
         homeSectionTitle:mutedC, settingsGroupTitle:mutedC,
         ink:inkC, muted:mutedC, faint:faintC, line:lineC, lineSoft:lineSoftC
@@ -6196,9 +7761,9 @@ ${gallery}
         surface:L(S*.24,.135), surface2:L(S*.26,.178), surface3:L(S*.27,.225),
         barBg:L(S*.30,.145), barBg2:L(S*.32,.188), barLine:lineC,
         topbarShadow:shadow, homeShadow:shadow, settingsShadow:shadow,
-        memoCodeBg:L(S*.20,.105), memoCodeIconBg:tint,
+        softAccentBg:tint, memoCodeBg:L(S*.20,.105), memoCodeIconBg:tint,
         sectionTitleBg:tint, homeSectionTitleBg:tint, homeSortBg:tint, projectCountBg:tint,
-        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tintHi, newNoteIconBg:tint, settingsPressedBg:tintHi,
+        sidebarCountBg:tint, sidebarSectionGradientStart:tint, sidebarFootBg:tint, newNoteIconBg:tint, settingsPressedBg:tint,
         memoTitle:titleInk, modalTitle:titleInk, settingsRowTitle:inkC,
         homeSectionTitle:mutedC, settingsGroupTitle:mutedC,
         ink:inkC, muted:mutedC, faint:faintC, line:lineC, lineSoft:lineSoftC
@@ -6226,16 +7791,16 @@ ${gallery}
   function customThemeAccentVars(palette,mode){
     const c=palette.colors, a=normalizeThemeHex(c.mainA,"#2F6FD0"), b=normalizeThemeHex(c.mainB,gradientMate(a));
     const mid=blendHsl(a,b,.5),dark=mode==="dark", deep=dark?hslToHex(mid.h,Math.max(.28,mid.s*.55),.23):hslToHex(mid.h,Math.max(.34,mid.s*.58),.30);
-    const soft=dark?hslToHex(mid.h,Math.max(.18,mid.s*.28),.18):hslToHex(mid.h,Math.max(.14,mid.s*.24),.91);
+    const suggestedSoft=dark?hslToHex(mid.h,Math.max(.18,mid.s*.28),.18):hslToHex(mid.h,Math.max(.14,mid.s*.24),.91);
+    const soft=normalizeThemeHex(c.softAccentBg,suggestedSoft);
     const logoBody=a,logoTip=b,logoInk=normalizeThemeHex(c.logoCore,contrastInk(a,dark)),word=dark?hslToHex(mid.h,Math.max(.15,mid.s*.22),.88):hslToHex(mid.h,Math.max(.24,mid.s*.42),.27);
-    const quickA=dark?hslToHex(hexToHsl(a).h,Math.max(.24,hexToHsl(a).s*.54),.25):hslToHex(hexToHsl(a).h,Math.max(.16,hexToHsl(a).s*.32),.91);
     const quickB=dark?hslToHex(hexToHsl(b).h,Math.max(.22,hexToHsl(b).s*.48),.18):hslToHex(hexToHsl(b).h,Math.max(.14,hexToHsl(b).s*.28),.965);
     return {
       "--accent":a,"--accent-2":b,"--accent-deep":deep,"--accent-soft":soft,"--accent-ink":c.ink,
       "--grad-blue":`linear-gradient(135deg, ${a} 0%, ${b} 100%)`,"--glow":`0 0 ${dark?24:18}px ${themeHexAlpha(a,dark?.30:.18)}`,"--logo-ink":word,
       "--custom-main-a":a,"--custom-main-b":b,"--custom-logo-body":logoBody,"--custom-logo-tip":logoTip,"--custom-logo-ink":logoInk,
       "--custom-logo-glow":`drop-shadow(0 0 ${dark?13:6}px ${themeHexAlpha(a,dark?.46:.28)})`,
-      "--quickmenu-default-icon-bg-a":quickA,"--quickmenu-default-icon-bg-b":quickB,
+      "--quickmenu-default-icon-bg-a":soft,"--quickmenu-default-icon-bg-b":quickB,"--quickmenu-panel-bg-b":soft,
       ...customThemeAutoTypeVars(a,b,dark)
     };
   }
@@ -6247,18 +7812,29 @@ ${gallery}
     finally { setOrRemoveAttr(root,"data-theme",oldTheme); setOrRemoveAttr(root,"data-accent",oldAccent); setOrRemoveAttr(root,"data-custom-theme",oldCustom); inline.forEach((value,name)=>{if(value)root.style.setProperty(name,value);else root.style.removeProperty(name);}); }
   }
   function capturePresetPalette(accentName,mode){ return withPresetComputed(accentName,mode,(css)=>Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item)=>{
-    const sourceVar=({ logoCore:"--accent-ink", sectionTitleBg:"--accent-soft", sidebarFootBg:"--accent-soft", sidebarSectionGradientStart:"--accent-soft", sidebarCountBg:"--accent-soft", topbarShadow:"--accent", memoCodeBg:"--paper", memoCodeIconBg:"--accent-soft", memoTitle:"--logo-ink", homeSectionTitle:"--muted", homeSectionTitleBg:"--accent-soft", homeShadow:"--accent", projectCountBg:"--accent-soft", homeSortBg:"--accent-soft", modalTitle:"--logo-ink", newNoteIconBg:"--accent-soft", settingsGroupTitle:"--muted", settingsRowTitle:"--ink", settingsShadow:"--accent", settingsPressedBg:"--surface-2" })[item.key] || item.variable;
+    const sourceVar=({ softAccentBg:"--accent-soft", logoCore:"--accent-ink", sectionTitleBg:"--accent-soft", sidebarFootBg:"--accent-soft", sidebarSectionGradientStart:"--accent-soft", sidebarCountBg:"--accent-soft", topbarShadow:"--accent", memoCodeBg:"--paper", memoCodeIconBg:"--accent-soft", memoTitle:"--logo-ink", homeSectionTitle:"--muted", homeSectionTitleBg:"--accent-soft", homeShadow:"--accent", projectCountBg:"--accent-soft", homeSortBg:"--accent-soft", modalTitle:"--logo-ink", newNoteIconBg:"--accent-soft", settingsGroupTitle:"--muted", settingsRowTitle:"--ink", settingsShadow:"--accent", settingsPressedBg:"--surface-2" })[item.key] || item.variable;
     return [item.key,normalizeThemeHex((css.getPropertyValue(sourceVar)||"").trim(),item.fallback)];
   }))) || cloneThemeObject(CUSTOM_THEME_FALLBACK_COLORS); }
   function normalizePalette(raw,fallback,mode){
     const src=raw&&typeof raw==="object"?raw:{}, ref=fallback||CUSTOM_THEME_FALLBACK_COLORS, out={};
+    // v66.18: older palettes exposed only a section title tint. Preserve it as the new shared
+    // light-accent background so existing user palettes do not suddenly change character.
+    const legacySharedSoft=src.softAccentBg||src.sectionTitleBg||src.memoCodeIconBg||src.homeSectionTitleBg||src.newNoteIconBg||src.sidebarCountBg||src.homeSortBg;
     const legacyMain=normalizeThemeHex(src.main||src.mainA,ref.mainA||"#2F6FD0");
     out.mainA=normalizeThemeHex(src.mainA||src.main,ref.mainA||legacyMain);
     out.mainB=normalizeThemeHex(src.mainB,ref.mainB||gradientMate(legacyMain));
     const recommended=recommendCustomPalette(out.mainA,out.mainB,mode==="dark"?"dark":"light");
     CUSTOM_THEME_COLOR_META.filter((item)=>item.key!=="mainA"&&item.key!=="mainB").forEach((item)=>{
+      if(item.key==="softAccentBg"){
+        out[item.key]=normalizeThemeHex(legacySharedSoft,recommended[item.key]||item.fallback);
+        return;
+      }
+      if(CUSTOM_THEME_SHARED_SOFT_KEYS.includes(item.key)){
+        out[item.key]=out.softAccentBg;
+        return;
+      }
       if(item.derived){ out[item.key]=normalizeThemeHex(recommended[item.key],item.fallback); return; }
-      const missingRole=["logoCore","sectionTitleBg","sidebarFootBg","sidebarSectionGradientStart","sidebarCountBg","topbarShadow","memoCodeBg","memoCodeIconBg","memoTitle","homeSectionTitle","homeSectionTitleBg","homeShadow","projectCountBg","homeSortBg","modalTitle","newNoteIconBg","settingsGroupTitle","settingsRowTitle","settingsShadow","settingsPressedBg"].includes(item.key);
+      const missingRole=["logoCore","topbarShadow","memoCodeBg","memoTitle","homeSectionTitle","homeShadow","modalTitle","settingsGroupTitle","settingsRowTitle","settingsShadow"].includes(item.key);
       out[item.key]=normalizeThemeHex(src[item.key],missingRole?(recommended[item.key]||item.fallback):(ref[item.key]||item.fallback));
     });
     return out;
@@ -6271,20 +7847,26 @@ ${gallery}
     const oldLight=src.light&&typeof src.light==="object"?src.light:{enabled:legacyV1?true:src.enabled===true,colors:src.colors};
     const oldDark=src.dark&&typeof src.dark==="object"?src.dark:{enabled:false,colors:null};
     const hasStoredPalette=!!(src.light||src.dark||src.colors||src.main||src.mainA||src.mainB||src.primary||src.secondary);
-    return {version:10,baseAccent,
+    return {version:12,baseAccent,
       light:{enabled:hasStoredPalette ? oldLight.enabled!==false : false,colors:normalizePalette(oldLight.colors,presetLight,"light")},
       dark:{enabled:hasStoredPalette ? oldDark.enabled!==false : false,colors:normalizePalette(oldDark.colors,presetDark,"dark")},
       updatedAt:Number(src.updatedAt)||0};
   }
   function currentCustomTheme(){ if(!st.customTheme||typeof st.customTheme!=="object")st.customTheme=normalizeCustomTheme(null); return normalizeCustomTheme(st.customTheme); }
-  function customThemeSeedFromActiveAccent(){ const activeAccent=st.accent===LEGACY_CUSTOM_ACCENT?currentCustomTheme().baseAccent:validAccentName(st.accent); const baseAccent=validAccentName(activeAccent); const lightPreset=capturePresetPalette(baseAccent,"light"),darkPreset=capturePresetPalette(baseAccent,"dark"); return {version:10,baseAccent,light:{enabled:true,colors:recommendCustomPalette(lightPreset.mainA,lightPreset.mainB,"light")},dark:{enabled:true,colors:recommendCustomPalette(darkPreset.mainA,darkPreset.mainB,"dark")},updatedAt:now()}; }
-  function customThemeStyleVars(palette,mode){ return Object.assign(Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item)=>[item.variable,palette.colors[item.key]])),customThemeAccentVars(palette,mode)); }
+  function customThemeSeedFromActiveAccent(){ const activeAccent=st.accent===LEGACY_CUSTOM_ACCENT?currentCustomTheme().baseAccent:validAccentName(st.accent); const baseAccent=validAccentName(activeAccent); const lightPreset=capturePresetPalette(baseAccent,"light"),darkPreset=capturePresetPalette(baseAccent,"dark"); return {version:12,baseAccent,light:{enabled:true,colors:recommendCustomPalette(lightPreset.mainA,lightPreset.mainB,"light")},dark:{enabled:true,colors:recommendCustomPalette(darkPreset.mainA,darkPreset.mainB,"dark")},updatedAt:now()}; }
+  function customThemeStyleVars(palette,mode){
+    const colors=palette.colors||{};
+    const soft=normalizeThemeHex(colors.softAccentBg,"#EAF0FF");
+    const direct=Object.fromEntries(CUSTOM_THEME_COLOR_META.map((item)=>[item.variable,colors[item.key]]));
+    const aliases=Object.fromEntries(Object.keys(CUSTOM_THEME_SHARED_SOFT_VARS).map((variable)=>[variable,soft]));
+    return Object.assign(direct,customThemeAccentVars(palette,mode),aliases);
+  }
   function clearCustomThemeStyles(){ const root=document.documentElement; CUSTOM_THEME_STYLE_VARS.forEach((name)=>root.style.removeProperty(name)); root.removeAttribute("data-custom-theme"); root.style.removeProperty("--custom-preview-a"); root.style.removeProperty("--custom-preview-b"); }
   function updateThemeMetaColor(){ const meta=document.querySelector('meta[name=theme-color]');if(!meta)return;const value=(getComputedStyle(document.documentElement).getPropertyValue("--bg")||"").trim();meta.setAttribute("content",/^#[0-9a-f]{6}$/i.test(value)?value:(st.theme==="light"?"#f3f4f8":"#0d0f17")); }
   function syncAccentGradientAndLabel(){ const css=getComputedStyle(document.documentElement),first=(css.getPropertyValue("--accent")||"#7B9BFF").trim(),second=(css.getPropertyValue("--accent-2")||"#B58BFF").trim();const a=$("igA"),bb=$("igB");if(a)a.setAttribute("stop-color",first);if(bb)bb.setAttribute("stop-color",second);const value=$("setAccentVal");if(value)value.innerHTML=`<span class="accent-dot"></span>${themeDisplayName()}`; }
   function applyCustomTheme(config,options){ const opt=options||{},cfg=normalizeCustomTheme(config),root=document.documentElement;st.customTheme=cfg;clearCustomThemeStyles();const active=st.theme==="dark"?"dark":"light",palette=cfg[active];if(st.accent===LEGACY_CUSTOM_ACCENT){root.setAttribute("data-custom-theme",active);Object.entries(customThemeStyleVars(palette,active)).forEach(([key,value])=>root.style.setProperty(key,value));}root.style.setProperty("--custom-preview-a",cfg.light.colors.mainA);root.style.setProperty("--custom-preview-b",cfg.light.colors.mainB);if(opt.persist!==false){try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}}syncAccentGradientAndLabel();updateThemeMetaColor(); }
   async function persistCustomTheme(config,options){ const opt=options||{},cfg=normalizeCustomTheme(Object.assign({},config,{updatedAt:now()}));cfg.light.enabled=true;cfg.dark.enabled=true;st.customTheme=cfg;try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}try{await put("settings",{id:CUSTOM_THEME_SETTING_ID,value:cfg,updatedAt:cfg.updatedAt});}catch(e){if(!opt.silent)toast("직접 지정 색상을 저장하지 못했어요");throw e;}if(opt.backup!==false)triggerAutoBackup();return cfg; }
-  async function loadCustomThemeSetting(){let stored=null;try{const row=await getOne("settings",CUSTOM_THEME_SETTING_ID);stored=row&&row.value;}catch(e){}if(!stored){try{const raw=localStorage.getItem("luminkCustomTheme");if(raw)stored=JSON.parse(raw);}catch(e){}}const cfg=normalizeCustomTheme(stored||st.customTheme||null);st.customTheme=cfg;const needsMigration=stored&&Number((stored.value||stored).version||1)<10;if(needsMigration){try{await persistCustomTheme(cfg,{backup:false,silent:true});}catch(e){}}applyCustomTheme(cfg,{persist:false});}
+  async function loadCustomThemeSetting(){let stored=null;try{const row=await getOne("settings",CUSTOM_THEME_SETTING_ID);stored=row&&row.value;}catch(e){}if(!stored){try{const raw=localStorage.getItem("luminkCustomTheme");if(raw)stored=JSON.parse(raw);}catch(e){}}const cfg=normalizeCustomTheme(stored||st.customTheme||null);st.customTheme=cfg;const needsMigration=stored&&Number((stored.value||stored).version||1)<12;if(needsMigration){try{await persistCustomTheme(cfg,{backup:false,silent:true});}catch(e){}}applyCustomTheme(cfg,{persist:false});}
   function appearanceSnapshot(){return {version:10,accent:st.accent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(st.accent),customTheme:normalizeCustomTheme(st.customTheme||null),updatedAt:now()};}
   async function restoreAppearanceConfig(value){if(!value||typeof value!=="object")return;const cfg=normalizeCustomTheme(value.customTheme||st.customTheme||null),accent=value.accent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(value.accent||cfg.baseAccent);st.customTheme=cfg;try{await put("settings",{id:CUSTOM_THEME_SETTING_ID,value:cfg,updatedAt:cfg.updatedAt||now()});}catch(e){}try{localStorage.setItem("luminkCustomTheme",JSON.stringify(cfg));}catch(e){}applyAccent(accent);applyCustomTheme(cfg,{persist:false});}
   function themeDisplayName(){ if(st.accent===LEGACY_CUSTOM_ACCENT)return "사용자 지정"; return (ACCENTS[validAccentName(st.accent)]||ACCENTS.blue).name; }
@@ -6307,7 +7889,7 @@ ${gallery}
     const restore=()=>{st.customTheme=cloneThemeObject(before);applyAccent(beforeAccent===LEGACY_CUSTOM_ACCENT?LEGACY_CUSTOM_ACCENT:validAccentName(beforeAccent));applyCustomTheme(before,{persist:false});};customThemePreviewRestore=restore;
     const palette=draft[mode],fields=CUSTOM_THEME_GROUPS.map(([key,label])=>{const groupItems=CUSTOM_THEME_COLOR_META.filter((item)=>item.group===key&&!item.derived);if(!groupItems.length)return "";const items=groupItems.map((item)=>`<button type="button" class="custom-theme-field custom-theme-field-button${key==="main"?" is-main":""}" data-custom-editor-key="${item.key}"><span><b>${esc(item.label)}</b><small>${palette.colors[item.key]}</small></span><i style="background:${palette.colors[item.key]}"></i><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.8 4.2 5 5L9 20H4v-5Z"/><path d="m12.2 6.8 5 5"/></svg></button>`).join("");return `<section class="custom-theme-group custom-theme-group-${key}"><h4>${label}</h4>${items}</section>`;}).join("");
     const title=mode==="dark"?"다크 모드 독립 테마":"라이트 모드 독립 테마";
-    openModal(`<h3>사용자 지정 테마</h3><p class="m-sub">사용자 지정은 프리셋의 변형이 아니라, <b>두 메인 색상의 그라데이션</b>에서 시작하는 독립 테마입니다. 로고·버튼·아이콘까지 같은 두 색을 함께 사용합니다.</p><div class="custom-theme-tabs"><button class="custom-theme-tab ${mode==="light"?"is-active":""}" data-custom-tab="light">라이트 모드</button><button class="custom-theme-tab ${mode==="dark"?"is-active":""}" data-custom-tab="dark">다크 모드</button></div><div class="custom-theme-studio"><div class="custom-theme-preview" id="customThemePreview"><span class="custom-theme-preview-mark"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="m5 5 14 14M19 5 5 19" opacity=".45"/></svg></span><span class="custom-theme-preview-copy"><b>${title}</b><small id="customThemePreviewText">두 메인 색상으로 로고와 추천 팔레트를 함께 구성합니다</small></span><span class="custom-theme-swatches"><i></i><i></i></span></div><div class="custom-theme-fields">${fields}</div><div class="custom-theme-tools custom-theme-tools-stacked"><small>메인 색상 1·2를 고른 뒤 추천 팔레트를 만들면 두 색의 결을 살린 배경·카드·글자·경계선이 한 번에 채워집니다. 작은 섹션 제목 배경과 메모 제목도 이 화면에서 직접 조절할 수 있어요.</small><div><button type="button" class="custom-theme-auto primary" id="customThemeRecommend">두 메인 색상으로 추천 팔레트 만들기</button><button type="button" class="custom-theme-auto" id="customThemeReset">현재 프리셋 색상 불러오기</button></div></div><div class="custom-theme-file-actions"><button type="button" class="custom-theme-auto" id="customThemeExport">현재 세팅 JSON 저장</button><button type="button" class="custom-theme-auto" id="customThemeImport">JSON 불러오기</button></div><p class="custom-theme-note">현재 편집 중인 라이트·다크 팔레트는 JSON으로 따로 보관하거나 다시 불러올 수 있습니다.</p></div><div class="m-row"><button class="m-btn" id="customThemeCancel">취소</button><button class="m-btn primary" id="customThemeApply">적용</button></div>`);
+    openModal(`<h3>사용자 지정 테마</h3><p class="m-sub">사용자 지정은 프리셋의 변형이 아니라, <b>두 메인 색상의 그라데이션</b>에서 시작하는 독립 테마입니다. 로고·버튼·아이콘까지 같은 두 색을 함께 사용합니다.</p><div class="custom-theme-tabs"><button class="custom-theme-tab ${mode==="light"?"is-active":""}" data-custom-tab="light">라이트 모드</button><button class="custom-theme-tab ${mode==="dark"?"is-active":""}" data-custom-tab="dark">다크 모드</button></div><div class="custom-theme-studio"><div class="custom-theme-preview" id="customThemePreview"><span class="custom-theme-preview-mark"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/><path d="m5 5 14 14M19 5 5 19" opacity=".45"/></svg></span><span class="custom-theme-preview-copy"><b>${title}</b><small id="customThemePreviewText">두 메인 색상으로 로고와 추천 팔레트를 함께 구성합니다</small></span><span class="custom-theme-swatches"><i></i><i></i></span></div><div class="custom-theme-fields">${fields}</div><div class="custom-theme-tools custom-theme-tools-stacked"><small>메인 색상 1·2를 고른 뒤 추천 팔레트를 만들면 두 색의 결을 살린 배경·카드·글자·경계선이 한 번에 채워집니다. 옅은 강조·선택 배경 하나를 바꾸면 코드 보기 아이콘, 글자 크기 선택, 새 메모 아이콘, 카운트·태그·섹션 제목 배경, 퀵메뉴 기본 아이콘의 첫 색과 패널 하단 색조까지 함께 정리됩니다. 메인 화면 섹션 제목 색은 홈·프로젝트 내부의 정렬 글자와 아이콘에도 함께 적용됩니다.</small><div><button type="button" class="custom-theme-auto primary" id="customThemeRecommend">두 메인 색상으로 추천 팔레트 만들기</button><button type="button" class="custom-theme-auto" id="customThemeReset">현재 프리셋 색상 불러오기</button></div></div><div class="custom-theme-file-actions"><button type="button" class="custom-theme-auto" id="customThemeExport">현재 세팅 JSON 저장</button><button type="button" class="custom-theme-auto" id="customThemeImport">JSON 불러오기</button></div><p class="custom-theme-note">현재 편집 중인 라이트·다크 팔레트는 JSON으로 따로 보관하거나 다시 불러올 수 있습니다.</p></div><div class="m-row"><button class="m-btn" id="customThemeCancel">취소</button><button class="m-btn primary" id="customThemeApply">적용</button></div>`);
     const preview=()=>{customThemePreviewPaint($("customThemePreview"),draft[mode]); if(st.theme===mode){ st.customTheme=normalizeCustomTheme(draft); applyAccent(LEGACY_CUSTOM_ACCENT); }};
     document.querySelectorAll("[data-custom-tab]").forEach((b)=>b.addEventListener("click",()=>openCustomThemeStudio(draft,b.dataset.customTab)));
     document.querySelectorAll("[data-custom-editor-key]").forEach((b)=>b.addEventListener("click",()=>{const key=b.dataset.customEditorKey,item=CUSTOM_THEME_COLOR_META.find((x)=>x.key===key);openAdvancedColorPicker(`${item.label} 색상`,draft[mode].colors[key],(value)=>{draft[mode].colors[key]=value;openCustomThemeStudio(draft,mode);},{prefix:"customThemeRole",saved:true,save:true,intro:"정사각형 색상판·HEX·RGB·스포이드로 정확하게 조절할 수 있어요."});}));
@@ -6563,9 +8145,15 @@ ${gallery}
     document.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         const s = curView().s;
-        if (s === "editor" || s === "html" || s === "lore" || s === "log" || s === "persona" || s === "character" || s === "idea") {
+        if (s === "html" && e.shiftKey) {
+          e.preventDefault(); showHtmlExportDialog(st.curNoteId); return;
+        }
+        if (s === "regex" && e.shiftKey) {
+          e.preventDefault(); void exportRegexJson(st.curNoteId); return;
+        }
+        if (s === "editor" || s === "html" || s === "regex" || s === "lore" || s === "log" || s === "persona" || s === "character" || s === "idea") {
           e.preventDefault();
-          if (s === "editor") flushSave(true); else if (s === "html") flushHtmlSave(true); else if (s === "lore") flushLore(); else if (s === "log") flushLog(); else if (s === "persona") flushPersona(); else if (s === "idea") flushIdeaBoard(); else flushCharacter();
+          if (s === "editor") flushSave(true); else if (s === "html") flushHtmlSave(true); else if (s === "regex") flushRegexSave(true); else if (s === "lore") flushLore(); else if (s === "log") flushLog(); else if (s === "persona") flushPersona(); else if (s === "idea") flushIdeaBoard(); else flushCharacter();
           toast("저장했어요");
         }
       }
@@ -6633,11 +8221,37 @@ ${gallery}
     $on("htmlSave", "click", () => { const s = htmlWorkshopSession; if (s && s.active) void flushHtmlSave(false, s.noteId); });
     $on("htmlMore", "click", () => openNoteSheet(st.curNoteId));
     $on("htmlCopy", "click", () => clipboardCopy($("htmlSource").value).then((ok) => toast(ok ? "원본 코드를 복사했어요" : "복사하지 못했어요")));
+    $on("htmlExport", "click", () => showHtmlExportDialog(st.curNoteId));
     $on("htmlReload", "click", () => { refreshHtmlPreview($("htmlSource").value); toast("미리보기를 새로고침했어요"); });
     $on("htmlOpenPage", "click", openHtmlPreviewPage);
     $on("htmlModeSource", "click", () => setHtmlView("source"));
     $on("htmlModePreview", "click", () => setHtmlView("preview"));
     $on("htmlModeSplit", "click", () => setHtmlView("split"));
+
+    // regex workshop
+    ["regexScriptName", "regexFind", "regexReplace", "regexTrimStrings", "regexMinDepth", "regexMaxDepth"].forEach((id) => {
+      $on(id, "input", scheduleRegexSave);
+      $on(id, "blur", () => { const s = regexWorkshopSession; if (s && s.active) void flushRegexSave(false, s.noteId); });
+    });
+    $on("regexSample", "input", () => { updateRegexSampleHighlight(); scheduleRegexSave(); });
+    $on("regexSample", "scroll", syncRegexSampleHighlight, { passive: true });
+    $on("regexSample", "blur", () => { const s = regexWorkshopSession; if (s && s.active) void flushRegexSave(false, s.noteId); });
+    ["regexMarkdownOnly", "regexPromptOnly", "regexRunOnEdit", "regexDisabled", "regexSubstituteRegex"].forEach((id) => {
+      $on(id, "change", scheduleRegexSave);
+    });
+    document.querySelectorAll("[data-regex-placement]").forEach((input) => input.addEventListener("change", scheduleRegexSave));
+    $on("regexGlobal", "change", () => { $("regexFind").value = regexSetGlobalInFind($("regexFind").value, $("regexGlobal").checked); scheduleRegexSave(); });
+    $on("regexSave", "click", () => { const s = regexWorkshopSession; if (s && s.active) void flushRegexSave(false, s.noteId); });
+    $on("regexMore", "click", () => openNoteSheet(st.curNoteId));
+    $on("regexCopyIn", "click", () => clipboardCopy($("regexFind").value).then((ok) => toast(ok ? "IN 정규식을 복사했어요" : "복사하지 못했어요")));
+    $on("regexCopyOut", "click", () => clipboardCopy($("regexReplace").value).then((ok) => toast(ok ? "OUT을 복사했어요" : "복사하지 못했어요")));
+    $on("regexExport", "click", () => void exportRegexJson(st.curNoteId));
+    $on("regexReload", "click", () => { refreshRegexPreview(); toast("미리보기를 새로고침했어요"); });
+    $on("regexFromSample", "click", applyRegexFromSample);
+    $on("regexAutoSample", "click", applyRegexAutoSample);
+    $on("regexModeEdit", "click", () => setRegexView("edit"));
+    $on("regexModePreview", "click", () => setRegexView("preview"));
+    $on("regexModeSplit", "click", () => setRegexView("split"));
 
 
 
@@ -6764,6 +8378,7 @@ ${gallery}
       else if (id === "eraseBtn") eraseFormatting();
       else if (id === "codeToggle") setCodeMode(!st.codeMode);
       else if (id === "attachBtn") $("attachInput").click();
+      else if (id === "freeInsertBtn") openFreeInsertMenu();
       else if (id === "colorBtn") openColorEditor();
     };
     fb.addEventListener("mousedown", fbHandler);
@@ -7156,7 +8771,62 @@ ${gallery}
     arrowEnds: { label:"화살 끝", desc:"양끝이 화살표인 선" },
     bracketEnds: { label:"괄호 끝", desc:"양끝에 괄호 장식 선" },
     taperDots: { label:"점 페이드", desc:"가운데 마름모에 점이 번지는 선" },
-    ornateScroll: { label:"스크롤", desc:"중앙 소용돌이 장식 선" }
+    ornateScroll: { label:"스크롤", desc:"중앙 소용돌이 장식 선" },
+    wave: { label:"물결", desc:"부드러운 곡선이 출렁이는 구분선" },
+    zigzag: { label:"지그재그", desc:"꺾인 선이 반복되는 구분선" },
+    rope: { label:"꼬임", desc:"두 가닥이 꼬인 밧줄 구분선" },
+    chainLink: { label:"사슬", desc:"고리가 이어진 사슬 구분선" },
+    groove: { label:"음각", desc:"홈이 파인 듯한 입체 구분선" },
+    ribbon: { label:"리본", desc:"굵은 띠에 가는 테두리가 더해진 선" },
+    barcode: { label:"바코드", desc:"굵기가 다른 세로 막대 구분선" },
+    scallop: { label:"스캘럽", desc:"반원이 이어지는 부채꼴 구분선" },
+    pearlRow: { label:"진주", desc:"큰 진주와 잔점이 교차하는 구분선" },
+    gradedDots: { label:"점강", desc:"가운데가 굵고 양끝으로 작아지는 점선" },
+    lattice: { label:"그물", desc:"교차 사선이 짜인 그물 구분선" },
+    brick: { label:"벽돌", desc:"위아래 두 줄이 엇갈린 벽돌 구분선" },
+    sparkleCenter: { label:"가운데 반짝", desc:"중앙 반짝이 장식 선" },
+    snowCenter: { label:"가운데 눈", desc:"중앙 눈송이 장식 선" },
+    sunCenter: { label:"가운데 해", desc:"중앙 태양 장식 선" },
+    quatrefoilCenter: { label:"가운데 네잎", desc:"중앙 네잎 장식 선" },
+    crossCenter: { label:"가운데 십자가", desc:"중앙 장식 십자가 선" },
+    asteriskCenter: { label:"가운데 별표", desc:"중앙 별표꽃 장식 선" },
+    floretCenter: { label:"가운데 꽃송이", desc:"중앙 꽃송이 장식 선" },
+    lozengeCenter: { label:"가운데 빈 마름모", desc:"중앙 빈 마름모 윤곽 선" },
+    diamondEnds: { label:"마름모 끝", desc:"양끝에 마름모가 달린 선" },
+    dotEnds: { label:"점 끝", desc:"양끝에 큰 점이 달린 선" },
+    ringEnds: { label:"고리 끝", desc:"양끝에 빈 고리가 달린 선" },
+    featherEnds: { label:"깃 끝", desc:"양끝에 깃 장식이 대칭으로 달린 선" },
+    flourishEnds: { label:"잎 끝", desc:"양끝에 잎 장식이 대칭으로 달린 선" },
+    lace: { label:"레이스", desc:"윗선·잔점·스캘럽이 겹친 레이스 구분선" },
+    arabesque: { label:"아라베스크", desc:"S자 당초무늬가 흐르는 구분선" },
+    greekKey: { label:"뇌문", desc:"직각 미로가 반복되는 그리스풍 구분선" },
+    vine: { label:"덩굴", desc:"잎이 달린 곡선 덩굴 구분선" },
+    celtic: { label:"켈틱 매듭", desc:"고리가 엮인 켈틱풍 구분선" },
+    filigree: { label:"필리그리", desc:"이중선·소용돌이·잔구슬의 세공 구분선" },
+    jewelBand: { label:"보석 띠", desc:"패싯이 빛나는 보석 띠 구분선" },
+    prism: { label:"프리즘", desc:"광택 사선이 반짝이는 구분선" },
+    crystalLine: { label:"크리스탈", desc:"깎인 보석 바 형태의 구분선" },
+    metallicGold: { label:"메탈 광택", desc:"금속 하이라이트가 흐르는 구분선" },
+    opal: { label:"오팔", desc:"영롱한 다색 펄이 번지는 구분선" },
+    gemChain: { label:"보석 사슬", desc:"패싯 마름모가 이어진 보석 사슬 구분선" },
+    aurora: { label:"오로라", desc:"다색 빛이 흐르며 발광하는 구분선" },
+    neonTube: { label:"네온관", desc:"강한 글로우에 화이트 코어가 든 구분선" },
+    starlight: { label:"별빛", desc:"중앙 큰 별과 잔별이 빛나는 구분선" },
+    emberGlow: { label:"잉걸불", desc:"발광 점이 가운데서 사그라드는 구분선" },
+    fairyLights: { label:"꼬마전구", desc:"줄에 색색 전구가 매달린 구분선" },
+    floralWreath: { label:"꽃 화환", desc:"이중선에 꽃과 잎을 두른 구분선" },
+    roseLine: { label:"장미", desc:"중앙 장미와 좌우 잎의 구분선" },
+    cherryBlossom: { label:"벚꽃", desc:"꽃잎이 흩날리는 벚꽃 구분선" },
+    laurel: { label:"월계", desc:"중앙 보석에 좌우 잎을 두른 구분선" },
+    royalCrest: { label:"문장", desc:"이중선·중앙 보석·좌우 깃의 엠블럼 구분선" },
+    scrollEnds: { label:"두루마리 끝", desc:"양끝 소용돌이와 중앙 마름모 구분선" },
+    gemDrop: { label:"펜던트", desc:"본선에서 보석이 늘어진 구분선" },
+    doubleRibbon: { label:"더블 리본", desc:"광택 두 줄과 중앙 매듭 구분선" },
+    mosaic: { label:"모자이크", desc:"다색 타일이 박힌 모자이크 구분선" },
+    chevronLux: { label:"쉐브론", desc:"굵은 V가 반복되는 광택 구분선" },
+    sunburst: { label:"햇살", desc:"중앙 방사 빛살이 퍼지는 구분선" },
+    damask: { label:"다마스크", desc:"마름모 격자가 짜인 다마스크 구분선" },
+    botanical: { label:"식물 줄기", desc:"줄기에 잎이 엇갈려 달린 구분선" }
   });
   const IDEA_DIVIDER_TEMPLATE_GUIDE = `# Lumi Ink 아이디어 보드 구분선 템플릿 가이드
 
@@ -8538,7 +10208,7 @@ ornamentLine: { label: "장식 실선", desc: "중앙 장식이 있는 구분선
     const noteLockMode=ideaLockMode(item);
     const lockAction=item.kind==="note" ? `<button class="idea-options-action" id="ideaOptLock"><b>${noteLockMode==="transform"?"요소 잠금":""}${noteLockMode==="full"?"전체 보호 잠금":""}${!noteLockMode?"잠금":""}</b><small>${noteLockMode==="transform"?"본문 편집은 가능 · 요소 조작 보호":noteLockMode==="full"?"본문까지 모든 편집 보호":"요소만 / 전체 보호 잠금 중 선택"}</small></button>` : `<button class="idea-options-action" id="ideaOptLock"><b>${ideaIsLocked(item)?"잠금 해제":"잠금"}</b><small>${ideaIsLocked(item)?"이 조각을 다시 편집 가능하게 합니다":"이동·크기·회전·삭제를 막습니다"}</small></button>`;
     const noteOptions=item.kind==="note"?`<div class="idea-options-section"><div class="idea-options-label">메모지 디자인</div><button class="idea-options-row" id="ideaOptDesign"><span>✦</span><span><b>${esc(IDEA_NOTE_TEMPLATES[item.noteStyle].label)}</b><small>디자인 선택 후 색상·글자색을 고르기</small></span></button><button class="idea-options-row" id="ideaOptVAlign"><span>↕</span><span><b>${item.vAlign==="center"?"세로 중앙맞춤":"세로 위맞춤"}</b><small>메모지 안쪽 내용을 세로 기준으로 맞춥니다</small></span></button></div>`:"";
-    const dividerOptions=item.kind==="divider"?`<div class="idea-options-section"><div class="idea-options-label">구분선 디자인</div><button class="idea-options-row" id="ideaOptDividerStyle"><span>—</span><span><b>${esc((IDEA_DIVIDER_STYLES[item.dividerStyle] || IDEA_DIVIDER_STYLES.solid).label)}</b><small>굵기 · 디자인 32종에서 선택</small></span></button></div>`:"";
+    const dividerOptions=item.kind==="divider"?`<div class="idea-options-section"><div class="idea-options-label">구분선 디자인</div><button class="idea-options-row" id="ideaOptDividerStyle"><span>—</span><span><b>${esc((IDEA_DIVIDER_STYLES[item.dividerStyle] || IDEA_DIVIDER_STYLES.solid).label)}</b><small>굵기 · 디자인 87종에서 선택</small></span></button></div>`:"";
     const colorOption=isColorable&&item.kind!=="note"?`<div class="idea-options-section"><div class="idea-options-label">테마 컬러</div><button class="idea-options-row" id="ideaOptColor"><span style="color:${esc(ideaColorMeta(item.color).ig[0])}">●</span><span><b>${esc(ideaColorMeta(item.color).name)}</b><small>테마 · 크림 · 먹색 · 직접 선택</small></span></button></div>`:"";
     const emptyFrameOptions=item.kind==="frame"?`<div class="idea-options-section idea-empty-frame-options"><div class="idea-options-label">테마</div><p class="idea-options-help">장식용 빈 프레임입니다. 프레임 종류와 컬러를 이곳에서 고릅니다.</p><button class="idea-options-row" id="ideaOptFrameType"><span>□</span><span><b>${esc(ideaMediaFrameLabel(item))}</b><small>프레임 종류 변경</small></span></button><button class="idea-options-row" id="ideaOptFrameColor"><span style="color:${esc(resolveFrameColor(item.frameColor||"#d4af37"))}">●</span><span><b>프레임 컬러</b><small>${esc((item.frameColor===FRAME_THEME_TOKEN?"테마":(frameById(item.frame)?String(item.frameColor||"#d4af37"):"프레임을 먼저 고르세요")))}</small></span></button></div>`:"";
     const renameAction=["quote","file","audio"].includes(item.kind)?`<button class="idea-options-action" id="ideaOptRename"><b>${item.kind==="audio"?"제목 바꾸기":"표시 제목"}</b><small>${item.kind==="audio"?"원본은 유지하고 보드에서만 바꾸기":"보드에서만 이름 바꾸기"}</small></button>`:"";
